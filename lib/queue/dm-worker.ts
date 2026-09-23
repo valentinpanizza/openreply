@@ -1459,8 +1459,10 @@ async function processJob(job: Job<DmQueueJob>): Promise<void> {
   try {
     await dispatchJob(job);
   } catch (error) {
+    // formatError() takes unknown; isDeliveryUnconfirmed() is a boolean check,
+    // so it does not narrow `error` the way the old instanceof test did.
     if (isDeliveryUnconfirmed(error))
-      throw new UnrecoverableError(error.message);
+      throw new UnrecoverableError(formatError(error));
     throw error;
   }
 }
