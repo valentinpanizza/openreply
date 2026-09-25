@@ -1561,8 +1561,17 @@ async function processNotifyLead(job: Job<NotifyLeadJob>): Promise<void> {
     }),
     signal: AbortSignal.timeout(15_000),
   });
-  if (!response.ok) {
-    throw new Error(`Lead webhook answered ${response.status}`);
+
+  // A 2xx alone is not proof the lead was stored. n8n answers 200 with an empty
+  // body when its workflow fails before reaching a "Respond to Webhook" node —
+  // seen in production with a Google Sheets permission error — and trusting
+  // that would mark the lead notified and never retry it. So the webhook has to
+  // confirm explicitly with {"ok": true} once the lead is safely stored.
+  const body = (await response.json().catch(() => null)) as { ok?: unknown } | null;
+  if (!response.ok || body?.ok !== true) {
+    throw new Error(
+      `Lead webhook did not confirm the lead (HTTP ${response.status})`
+    );
   }
 
   await prisma.lead.update({

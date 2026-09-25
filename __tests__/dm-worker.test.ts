@@ -1595,7 +1595,7 @@ describe("DM Worker — lead notification", () => {
     vi.stubEnv("LEAD_WEBHOOK_SECRET", "s3cret");
     mockPrisma.lead.findUnique.mockResolvedValue(leadRow);
     mockPrisma.automation.findUnique.mockResolvedValue({ name: "Legal checklist" });
-    fetchMock.mockResolvedValue(new Response("ok"));
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ ok: true })));
     vi.stubGlobal("fetch", fetchMock);
 
     await getProcessor()(notifyJob("n1"));
@@ -1634,6 +1634,21 @@ describe("DM Worker — lead notification", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(getProcessor()(notifyJob("n3"))).rejects.toThrow("502");
+    expect(mockPrisma.lead.update).not.toHaveBeenCalled();
+  });
+
+  it("does not trust a bare 200 — the webhook must confirm with ok: true", async () => {
+    // What n8n actually returns when its workflow fails before responding: a
+    // 200 with an empty body. Treating that as success would lose the lead.
+    vi.stubEnv("LEAD_WEBHOOK_URL", "https://n8n.example/webhook/lead");
+    mockPrisma.lead.findUnique.mockResolvedValue(leadRow);
+    mockPrisma.automation.findUnique.mockResolvedValue({ name: "Legal checklist" });
+    fetchMock.mockResolvedValue(new Response("", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getProcessor()(notifyJob("n5"))).rejects.toThrow(
+      "did not confirm"
+    );
     expect(mockPrisma.lead.update).not.toHaveBeenCalled();
   });
 
