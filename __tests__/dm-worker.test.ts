@@ -144,6 +144,7 @@ vi.mock("bullmq", () => {
 });
 
 import { createDMWorker } from "../lib/queue/dm-worker";
+import { getRedisConnection } from "@/lib/queue/client";
 
 const usagePeriodStart = new Date("2026-05-01T00:00:00.000Z");
 
@@ -1420,13 +1421,14 @@ describe("durable Zernio postback delivery", () => {
     try {
       const process = getProcessor();
       const followTap = tap("follow");
-      // The prompt goes out on the delayed re-check — a first false only queues
-      // that re-check — so exercise the re-check pass: that is where the prompt
-      // is sent, and where a redelivery must not send it a second time.
+      // The prompt goes out on the last delayed re-check — an earlier false
+      // only queues the next one — so exercise that pass: that is where the
+      // prompt is sent, and where a redelivery must not send it a second time.
       followTap.data = {
         ...followTap.data,
         payload: "followcheck:auto_789",
         followRecheck: true,
+        followRecheckAttempt: 2,
       };
       await process(followTap);
       await process({ ...followTap, id: "redelivery" });
@@ -1464,7 +1466,7 @@ describe("DM Worker — follow-gate re-check", () => {
     );
   });
 
-  it("prompts and records the rejection when the re-check still finds no follow", async () => {
+  it("prompts and records the rejection when the last re-check still finds no follow", async () => {
     mockPrisma.automation.findFirst.mockResolvedValue(gated);
     mockGetUserFollowStatus.mockResolvedValue(false);
 
@@ -1474,6 +1476,7 @@ describe("DM Worker — follow-gate re-check", () => {
         userId: "commenter_999",
         payload: "followcheck:auto_789",
         followRecheck: true,
+        followRecheckAttempt: 2,
       })
     );
 
@@ -1504,7 +1507,56 @@ describe("DM Worker — follow-gate re-check", () => {
     const [, , opts] = mockQueueAdd.mock.calls[0];
     // A fixed per-user id would collide with the retained completed job of an
     // earlier re-check and be dropped silently by BullMQ.
-    expect(opts.jobId).toMatch(/^postback_recheck_auto_789_commenter_999_\d+$/);
+    expect(opts.jobId).toMatch(/^postback_recheck_auto_789_commenter_999_1_\d+$/);
+  });
+
+  it("checks twice: soon after the tap, then again before giving up", async () => {
+    mockPrisma.automation.findFirst.mockResolvedValue(gated);
+    mockGetUserFollowStatus.mockResolvedValue(false);
+    const tap = {
+      instagramAccountId: "ig_456",
+      userId: "commenter_999",
+      payload: "followcheck:auto_789",
+    };
+
+    await getProcessor()(createMockPostbackJob(tap));
+    expect(mockQueueAdd).toHaveBeenLastCalledWith(
+      "process-postback",
+      expect.objectContaining({ followRecheckAttempt: 1 }),
+      expect.objectContaining({ delay: 20_000 })
+    );
+
+    await getProcessor()(
+      createMockPostbackJob({ ...tap, followRecheck: true, followRecheckAttempt: 1 })
+    );
+    expect(mockQueueAdd).toHaveBeenLastCalledWith(
+      "process-postback",
+      expect.objectContaining({ followRecheckAttempt: 2 }),
+      expect.objectContaining({ delay: 40_000 })
+    );
+    // Neither pass has given up yet, so neither re-sends the prompt.
+    expect(mockSendDirectMessageWithButton).not.toHaveBeenCalled();
+  });
+
+  it("treats a re-check queued before counting existed as the first one done", async () => {
+    mockPrisma.automation.findFirst.mockResolvedValue(gated);
+    mockGetUserFollowStatus.mockResolvedValue(false);
+
+    await getProcessor()(
+      createMockPostbackJob({
+        instagramAccountId: "ig_456",
+        userId: "commenter_999",
+        payload: "followcheck:auto_789",
+        followRecheck: true,
+      })
+    );
+
+    expect(mockQueueAdd).toHaveBeenCalledWith(
+      "process-postback",
+      expect.objectContaining({ followRecheckAttempt: 2 }),
+      expect.anything()
+    );
+    expect(mockSendDirectMessageWithButton).not.toHaveBeenCalled();
   });
 
   it("prompts a non-follower right away when the tap came from the opening DM", async () => {
@@ -1554,6 +1606,82 @@ describe("DM Worker — follow-gate re-check", () => {
       expect.anything(),
       expect.anything()
     );
+  });
+});
+
+describe("DM Worker — follow re-check acknowledgement", () => {
+  const gated = { ...mockAutomation, requireFollow: true, trackedLinks: [] };
+  const tap = {
+    instagramAccountId: "ig_456",
+    userId: "commenter_999",
+    payload: "followcheck:auto_789",
+  };
+  const mockRedisSet = vi.fn();
+
+  beforeEach(() => {
+    process.env.FOLLOW_RECHECK_ACK_MESSAGE = "Dame unos segundos que lo verifico";
+    mockRedisSet.mockReset().mockResolvedValue("OK");
+    vi.mocked(getRedisConnection).mockReturnValue({ set: mockRedisSet } as never);
+    mockPrisma.automation.findFirst.mockResolvedValue(gated);
+    mockGetUserFollowStatus.mockResolvedValue(false);
+  });
+
+  afterEach(() => {
+    delete process.env.FOLLOW_RECHECK_ACK_MESSAGE;
+  });
+
+  it("answers a not-yet-visible follow right away instead of leaving the chat silent", async () => {
+    await getProcessor()(createMockPostbackJob(tap));
+
+    expect(mockSendDirectMessage).toHaveBeenCalledWith(
+      "decrypted_token",
+      "ig_456",
+      "commenter_999",
+      "Dame unos segundos que lo verifico"
+    );
+    // The re-check is still what decides; the acknowledgement only fills the wait.
+    expect(mockQueueAdd).toHaveBeenCalledWith(
+      "process-postback",
+      expect.objectContaining({ followRecheckAttempt: 1 }),
+      expect.anything()
+    );
+  });
+
+  it("acknowledges a burst of taps only once", async () => {
+    mockRedisSet.mockResolvedValueOnce("OK").mockResolvedValueOnce(null);
+
+    await getProcessor()(createMockPostbackJob(tap));
+    await getProcessor()(createMockPostbackJob(tap));
+
+    expect(mockSendDirectMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not acknowledge again on the re-check passes", async () => {
+    await getProcessor()(
+      createMockPostbackJob({ ...tap, followRecheck: true, followRecheckAttempt: 1 })
+    );
+
+    expect(mockSendDirectMessage).not.toHaveBeenCalled();
+  });
+
+  it("still re-checks when the acknowledgement cannot be sent", async () => {
+    mockSendDirectMessage.mockRejectedValueOnce(new Error("boom"));
+
+    await expect(getProcessor()(createMockPostbackJob(tap))).resolves.toBeUndefined();
+    expect(mockQueueAdd).toHaveBeenCalledWith(
+      "process-postback",
+      expect.objectContaining({ followRecheckAttempt: 1 }),
+      expect.anything()
+    );
+  });
+
+  it("sends nothing extra when no acknowledgement message is configured", async () => {
+    delete process.env.FOLLOW_RECHECK_ACK_MESSAGE;
+
+    await getProcessor()(createMockPostbackJob(tap));
+
+    expect(mockSendDirectMessage).not.toHaveBeenCalled();
+    expect(mockRedisSet).not.toHaveBeenCalled();
   });
 });
 
