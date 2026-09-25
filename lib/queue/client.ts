@@ -74,15 +74,28 @@ export interface ProcessMessageJob {
   senderId: string;
 }
 
+// Tells LEAD_WEBHOOK_URL about a newly captured Lead. A job of its own so a
+// failed webhook is retried without re-running the postback that captured the
+// lead — which would deliver the link again.
+export interface NotifyLeadJob {
+  // Same scoping fields as every other job, so the worker's shared helpers
+  // (connection scope, failure records) treat it like the rest.
+  accountConnectionId?: string;
+  instagramAccountId: string;
+  leadId: string;
+}
+
 export type DmQueueJob =
   | ProcessCommentJob
   | ProcessPostbackJob
   | ProcessFollowUpJob
-  | ProcessMessageJob;
+  | ProcessMessageJob
+  | NotifyLeadJob;
 
 export const POSTBACK_JOB_NAME = "process-postback";
 export const FOLLOWUP_JOB_NAME = "process-followup";
 export const MESSAGE_JOB_NAME = "process-message";
+export const LEAD_JOB_NAME = "notify-lead";
 
 let dmQueue: Queue<DmQueueJob> | null = null;
 

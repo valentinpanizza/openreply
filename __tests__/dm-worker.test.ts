@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 const {
   mockPrisma,
@@ -23,6 +23,12 @@ const {
     automation: {
       findMany: vi.fn(),
       findFirst: vi.fn(),
+      findUnique: vi.fn(),
+    },
+    lead: {
+      create: vi.fn(),
+      findUnique: vi.fn(),
+      update: vi.fn(),
     },
     dmLog: {
       findUnique: vi.fn(),
@@ -118,6 +124,7 @@ vi.mock("@/lib/queue/client", () => ({
   POSTBACK_JOB_NAME: "process-postback",
   FOLLOWUP_JOB_NAME: "process-followup",
   MESSAGE_JOB_NAME: "process-message",
+  LEAD_JOB_NAME: "notify-lead",
 }));
 
 vi.mock("bullmq", () => {
@@ -1388,7 +1395,14 @@ describe("durable Zernio postback delivery", () => {
     try {
       const process = getProcessor();
       const followTap = tap("follow");
-      followTap.data = { ...followTap.data, payload: "followcheck:auto_789" };
+      // The prompt goes out on the delayed re-check — a first false only queues
+      // that re-check — so exercise the re-check pass: that is where the prompt
+      // is sent, and where a redelivery must not send it a second time.
+      followTap.data = {
+        ...followTap.data,
+        payload: "followcheck:auto_789",
+        followRecheck: true,
+      };
       await process(followTap);
       await process({ ...followTap, id: "redelivery" });
       expect(
@@ -1397,5 +1411,239 @@ describe("durable Zernio postback delivery", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe("DM Worker — follow-gate re-check", () => {
+  const gated = { ...mockAutomation, requireFollow: true, trackedLinks: [] };
+
+  it("re-checks a first false follow later instead of rejecting the tap", async () => {
+    mockPrisma.automation.findFirst.mockResolvedValue(gated);
+    mockGetUserFollowStatus.mockResolvedValue(false);
+
+    await getProcessor()(
+      createMockPostbackJob({
+        instagramAccountId: "ig_456",
+        userId: "commenter_999",
+        payload: "followcheck:auto_789",
+      })
+    );
+
+    // Nothing is sent yet: a brand-new follow may simply not have registered.
+    expect(mockSendDirectMessageWithButton).not.toHaveBeenCalled();
+    expect(mockSendDirectMessage).not.toHaveBeenCalled();
+    expect(mockQueueAdd).toHaveBeenCalledWith(
+      "process-postback",
+      expect.objectContaining({ followRecheck: true, userId: "commenter_999" }),
+      expect.objectContaining({ delay: expect.any(Number) })
+    );
+  });
+
+  it("prompts and records the rejection when the re-check still finds no follow", async () => {
+    mockPrisma.automation.findFirst.mockResolvedValue(gated);
+    mockGetUserFollowStatus.mockResolvedValue(false);
+
+    await getProcessor()(
+      createMockPostbackJob({
+        instagramAccountId: "ig_456",
+        userId: "commenter_999",
+        payload: "followcheck:auto_789",
+        followRecheck: true,
+      })
+    );
+
+    expect(mockSendDirectMessageWithButton).toHaveBeenCalledTimes(1);
+    expect(mockPrisma.operationalEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          message: "Follow gate rejected a button tap",
+        }),
+      })
+    );
+    // A re-check never queues another re-check.
+    expect(mockQueueAdd).not.toHaveBeenCalled();
+  });
+
+  it("buckets the re-check id by time so a later tap is not blocked by an old job", async () => {
+    mockPrisma.automation.findFirst.mockResolvedValue(gated);
+    mockGetUserFollowStatus.mockResolvedValue(false);
+
+    await getProcessor()(
+      createMockPostbackJob({
+        instagramAccountId: "ig_456",
+        userId: "commenter_999",
+        payload: "followcheck:auto_789",
+      })
+    );
+
+    const [, , opts] = mockQueueAdd.mock.calls[0];
+    // A fixed per-user id would collide with the retained completed job of an
+    // earlier re-check and be dropped silently by BullMQ.
+    expect(opts.jobId).toMatch(/^postback_recheck_auto_789_commenter_999_\d+$/);
+  });
+});
+
+describe("DM Worker — lead capture", () => {
+  const gated = { ...mockAutomation, requireFollow: true, trackedLinks: [] };
+
+  it("saves a lead-button tap as a lead, queues its notification, and still sends the link", async () => {
+    mockPrisma.automation.findFirst.mockResolvedValue(gated);
+    mockGetUserFollowStatus.mockResolvedValue(true);
+    mockPrisma.lead.create.mockResolvedValue({ id: "lead_1" });
+
+    await getProcessor()(
+      createMockPostbackJob({
+        instagramAccountId: "ig_456",
+        userId: "commenter_999",
+        payload: "followcheck:auto_789:lead",
+      })
+    );
+
+    expect(mockPrisma.lead.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        automationId: "auto_789",
+        userId: "commenter_999",
+        username: "commenter_user",
+      }),
+    });
+    expect(mockQueueAdd).toHaveBeenCalledWith(
+      "notify-lead",
+      expect.objectContaining({ leadId: "lead_1", instagramAccountId: "ig_456" })
+    );
+    // The ":lead" suffix must not break routing: the link still goes out.
+    expect(mockSendDirectMessage).toHaveBeenCalled();
+  });
+
+  it("does not queue a second notification when the person is already a lead", async () => {
+    mockPrisma.automation.findFirst.mockResolvedValue(gated);
+    mockGetUserFollowStatus.mockResolvedValue(true);
+    mockPrisma.lead.create.mockRejectedValue(
+      Object.assign(new Error("Unique constraint failed"), { code: "P2002" })
+    );
+
+    await getProcessor()(
+      createMockPostbackJob({
+        instagramAccountId: "ig_456",
+        userId: "commenter_999",
+        payload: "followcheck:auto_789:lead",
+      })
+    );
+
+    expect(mockQueueAdd).not.toHaveBeenCalledWith("notify-lead", expect.anything());
+    // A repeat tap is still answered with the link.
+    expect(mockSendDirectMessage).toHaveBeenCalled();
+  });
+
+  it("does not capture the lead again on the follow re-check pass", async () => {
+    mockPrisma.automation.findFirst.mockResolvedValue(gated);
+    mockGetUserFollowStatus.mockResolvedValue(true);
+
+    await getProcessor()(
+      createMockPostbackJob({
+        instagramAccountId: "ig_456",
+        userId: "commenter_999",
+        payload: "followcheck:auto_789:lead",
+        followRecheck: true,
+      })
+    );
+
+    expect(mockPrisma.lead.create).not.toHaveBeenCalled();
+  });
+
+  it("never lets a failed lead capture cost the person their link", async () => {
+    mockPrisma.automation.findFirst.mockResolvedValue(gated);
+    mockGetUserFollowStatus.mockResolvedValue(true);
+    mockPrisma.lead.create.mockRejectedValue(new Error("database down"));
+
+    await getProcessor()(
+      createMockPostbackJob({
+        instagramAccountId: "ig_456",
+        userId: "commenter_999",
+        payload: "followcheck:auto_789:lead",
+      })
+    );
+
+    expect(mockSendDirectMessage).toHaveBeenCalled();
+  });
+});
+
+describe("DM Worker — lead notification", () => {
+  const leadRow = {
+    id: "lead_1",
+    automationId: "auto_789",
+    userId: "commenter_999",
+    username: "commenter_user",
+    commentText: "legal",
+    notifiedAt: null as Date | null,
+    createdAt: new Date("2026-09-24T12:00:00Z"),
+  };
+  const fetchMock = vi.fn();
+  const notifyJob = (id: string) => ({
+    name: "notify-lead",
+    data: { instagramAccountId: "ig_456", leadId: "lead_1" },
+    id,
+    attemptsMade: 0,
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+
+  it("posts the lead to the webhook with the shared secret and marks it notified", async () => {
+    vi.stubEnv("LEAD_WEBHOOK_URL", "https://n8n.example/webhook/lead");
+    vi.stubEnv("LEAD_WEBHOOK_SECRET", "s3cret");
+    mockPrisma.lead.findUnique.mockResolvedValue(leadRow);
+    mockPrisma.automation.findUnique.mockResolvedValue({ name: "Legal checklist" });
+    fetchMock.mockResolvedValue(new Response("ok"));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await getProcessor()(notifyJob("n1"));
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("https://n8n.example/webhook/lead");
+    expect(init.headers["X-Lead-Secret"]).toBe("s3cret");
+    expect(JSON.parse(init.body)).toMatchObject({
+      campaign: "Legal checklist",
+      username: "commenter_user",
+      profileUrl: "https://instagram.com/commenter_user",
+      commentText: "legal",
+    });
+    expect(mockPrisma.lead.update).toHaveBeenCalledWith({
+      where: { id: "lead_1" },
+      data: { notifiedAt: expect.any(Date) },
+    });
+  });
+
+  it("does not send a lead that was already notified", async () => {
+    vi.stubEnv("LEAD_WEBHOOK_URL", "https://n8n.example/webhook/lead");
+    mockPrisma.lead.findUnique.mockResolvedValue({ ...leadRow, notifiedAt: new Date() });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await getProcessor()(notifyJob("n2"));
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("throws on a failed webhook so the job is retried, without marking it notified", async () => {
+    vi.stubEnv("LEAD_WEBHOOK_URL", "https://n8n.example/webhook/lead");
+    mockPrisma.lead.findUnique.mockResolvedValue(leadRow);
+    mockPrisma.automation.findUnique.mockResolvedValue({ name: "Legal checklist" });
+    fetchMock.mockResolvedValue(new Response("down", { status: 502 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getProcessor()(notifyJob("n3"))).rejects.toThrow("502");
+    expect(mockPrisma.lead.update).not.toHaveBeenCalled();
+  });
+
+  it("does nothing when no lead webhook is configured", async () => {
+    vi.stubEnv("LEAD_WEBHOOK_URL", "");
+    vi.stubGlobal("fetch", fetchMock);
+
+    await getProcessor()(notifyJob("n4"));
+
+    expect(mockPrisma.lead.findUnique).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

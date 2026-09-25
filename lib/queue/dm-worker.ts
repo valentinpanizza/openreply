@@ -6,11 +6,13 @@ import {
   MESSAGE_JOB_NAME,
   POSTBACK_JOB_NAME,
   FOLLOWUP_JOB_NAME,
+  LEAD_JOB_NAME,
   type DmQueueJob,
   type ProcessCommentJob,
   type ProcessMessageJob,
   type ProcessPostbackJob,
   type ProcessFollowUpJob,
+  type NotifyLeadJob,
 } from "./client";
 import { prisma } from "@/lib/db/client";
 import {
@@ -643,16 +645,20 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
           commenterName,
           trackedLinks: [],
         });
+        const openingPayload = automation.requireFollow
+          ? `followcheck:${automation.id}`
+          : `reveal:${automation.id}`;
         await sendPrivateReplyWithButton({
           context: accessToken,
           instagramAccountId: automation.instagramAccount.instagramId,
           commentId: commentId,
           text: openingText,
           buttonTitle: automation.openingDmButtonLabel as string,
-          payload: automation.requireFollow
-            ? `followcheck:${automation.id}`
-            : `reveal:${automation.id}`,
+          payload: openingPayload,
           postId: mediaId,
+          leadingButtons: automation.leadButtonLabel
+            ? [{ title: automation.leadButtonLabel, payload: `${openingPayload}:lead` }]
+            : [],
         });
       } else if (sendFollowPrompt) {
         const promptText = renderMessageWithoutLink({
@@ -834,9 +840,13 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
 
   const isFollowCheck = payload.startsWith("followcheck:");
   if (!isFollowCheck && !payload.startsWith("reveal:")) return;
-  const automationId = payload.slice(
-    isFollowCheck ? "followcheck:".length : "reveal:".length,
-  );
+  // The lead button reuses the main button's payload with a ":lead" suffix, so
+  // it runs the same follow gate and delivers the same link; the suffix only
+  // marks the person as a lead. Automation ids are cuids and contain no colon.
+  const [automationId, marker] = payload
+    .slice(isFollowCheck ? "followcheck:".length : "reveal:".length)
+    .split(":");
+  const isLeadTap = marker === "lead";
 
   const automation = await prisma.automation.findFirst({
     where: { id: automationId, isActive: true, ...connectionScope(job.data) },
@@ -884,6 +894,17 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
     select: { commenterName: true },
   });
   const commenterName = openingLog?.commenterName ?? null;
+
+  // Capture the lead on the first tap only: the delayed follow re-check re-runs
+  // this job with the same payload and must not count twice. It happens before
+  // the follow gate on purpose — a business owner who never follows is still a
+  // lead worth a message.
+  if (isLeadTap && !job.data.followRecheck) {
+    await captureLead(automation, userId, commenterName, {
+      instagramAccountId,
+      accountConnectionId: job.data.accountConnectionId,
+    });
+  }
 
   let accessToken: InstagramContext;
   try {
@@ -1448,6 +1469,108 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
   }
 }
 
+/**
+ * Save someone who tapped the lead button, and queue the webhook notification.
+ *
+ * The unique key on (automationId, userId) is the dedupe: a repeat tap hits it
+ * and stops here, so each person is captured and notified once per campaign.
+ * Failure is logged and swallowed — capturing a lead must never cost that
+ * person the link they asked for.
+ */
+async function captureLead(
+  automation: { id: string; workspaceId: string; instagramAccountId: string },
+  userId: string,
+  username: string | null,
+  // The postback job's own scope, carried over to the notification job.
+  scope: { instagramAccountId: string; accountConnectionId?: string },
+): Promise<void> {
+  try {
+    // The comment that brought them in, not a later "(button tap)" row.
+    const comment = await prisma.dmLog.findFirst({
+      where: {
+        automationId: automation.id,
+        commenterId: userId,
+        commentText: { not: "(button tap)" },
+      },
+      orderBy: { createdAt: "asc" },
+      select: { commentText: true },
+    });
+
+    const lead = await prisma.lead.create({
+      data: {
+        workspaceId: automation.workspaceId,
+        automationId: automation.id,
+        instagramAccountId: automation.instagramAccountId,
+        userId,
+        username,
+        commentText: comment?.commentText ?? null,
+      },
+    });
+
+    await getDMQueue().add(LEAD_JOB_NAME, { ...scope, leadId: lead.id });
+  } catch (error) {
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === "P2002"
+    )
+      return;
+    console.error("[DM Worker] Lead capture failed:", formatError(error));
+  }
+}
+
+/**
+ * Hand a captured lead to LEAD_WEBHOOK_URL — e.g. an n8n workflow that pings
+ * the owner and appends a row to a sheet. With the variable unset the feature
+ * is off and leads only live in the database.
+ *
+ * Throwing lets BullMQ retry on its normal backoff. notifiedAt is checked first
+ * and written only once the webhook has accepted, so a retry after a success
+ * never delivers the lead twice. Each lead gets exactly one job (captureLead
+ * only enqueues on a fresh row), so there is no concurrent send to race.
+ */
+async function processNotifyLead(job: Job<NotifyLeadJob>): Promise<void> {
+  const url = process.env.LEAD_WEBHOOK_URL;
+  if (!url) return;
+
+  const lead = await prisma.lead.findUnique({ where: { id: job.data.leadId } });
+  if (!lead || lead.notifiedAt) return;
+
+  const automation = await prisma.automation.findUnique({
+    where: { id: lead.automationId },
+    select: { name: true },
+  });
+
+  const secret = process.env.LEAD_WEBHOOK_SECRET;
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(secret ? { "X-Lead-Secret": secret } : {}),
+    },
+    body: JSON.stringify({
+      campaign: automation?.name ?? null,
+      username: lead.username,
+      profileUrl: lead.username
+        ? `https://instagram.com/${lead.username}`
+        : null,
+      userId: lead.userId,
+      commentText: lead.commentText,
+      capturedAt: lead.createdAt.toISOString(),
+    }),
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!response.ok) {
+    throw new Error(`Lead webhook answered ${response.status}`);
+  }
+
+  await prisma.lead.update({
+    where: { id: lead.id },
+    data: { notifiedAt: new Date() },
+  });
+}
+
 async function dispatchJob(job: Job<DmQueueJob>): Promise<void> {
   if (job.name === POSTBACK_JOB_NAME) {
     return processPostback(job as Job<ProcessPostbackJob>);
@@ -1457,6 +1580,9 @@ async function dispatchJob(job: Job<DmQueueJob>): Promise<void> {
   }
   if (job.name === MESSAGE_JOB_NAME) {
     return processMessage(job as Job<ProcessMessageJob>);
+  }
+  if (job.name === LEAD_JOB_NAME) {
+    return processNotifyLead(job as Job<NotifyLeadJob>);
   }
   return processComment(job as Job<ProcessCommentJob>);
 }

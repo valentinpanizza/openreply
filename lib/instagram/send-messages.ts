@@ -104,6 +104,7 @@ export async function sendPrivateReplyWithButton({
   buttonTitle,
   payload,
   postId,
+  leadingButtons = [],
 }: {
   context: InstagramContext;
   instagramAccountId: string;
@@ -112,6 +113,8 @@ export async function sendPrivateReplyWithButton({
   buttonTitle: string;
   payload: string;
   postId?: string;
+  // Extra postback buttons shown before the main one (e.g. a lead button).
+  leadingButtons?: { title: string; payload: string }[];
 }) {
   if (context.provider === "META")
     return meta.sendPrivateReplyWithButton(
@@ -120,14 +123,19 @@ export async function sendPrivateReplyWithButton({
       commentId,
       text,
       buttonTitle,
-      payload
+      payload,
+      // Only when there is one, so a campaign without a lead button sends
+      // exactly the call it always did.
+      ...(leadingButtons.length > 0 ? [leadingButtons] : [])
     );
   return sendZernioMessage({
     context,
     commentId,
     postId,
     text: text,
-    buttons: [{ type: "postback", title: buttonTitle.slice(0, 20), payload }],
+    buttons: [...leadingButtons, { title: buttonTitle, payload }]
+      .slice(0, 3)
+      .map((b) => ({ type: "postback", title: b.title.slice(0, 20), payload: b.payload })),
   });
 }
 

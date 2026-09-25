@@ -28,6 +28,7 @@ interface CampaignPreviewProps {
   openingDmEnabled: boolean;
   openingDmMessage: string;
   openingDmButtonLabel: string;
+  leadButtonLabel?: string;
   revealMessage: string;
   hasLink: boolean;
   linkButtonLabel: string;
@@ -310,6 +311,7 @@ function DmScreen({
   openingDmEnabled,
   openingDmMessage,
   openingDmButtonLabel,
+  leadButtonLabel = "",
   revealMessage,
   hasLink,
   linkButtonLabel,
@@ -329,6 +331,7 @@ function DmScreen({
   openingDmEnabled: boolean;
   openingDmMessage: string;
   openingDmButtonLabel: string;
+  leadButtonLabel?: string;
   revealMessage: string;
   hasLink: boolean;
   linkButtonLabel: string;
@@ -371,6 +374,11 @@ function DmScreen({
               <Avatar url={avatarUrl} size={24} />
               <div className="max-w-[80%] overflow-hidden rounded-2xl rounded-bl-md bg-zinc-800">
                 <p className="whitespace-pre-wrap px-3 py-2 text-sm">{openingDmMessage || "Your opening message…"}</p>
+                {leadButtonLabel && (
+                  <div className="mx-1.5 mb-1.5 rounded-xl bg-zinc-700 px-4 py-1.5 text-center text-sm font-medium text-white">
+                    {leadButtonLabel}
+                  </div>
+                )}
                 <div className="mx-1.5 mb-1.5 rounded-xl bg-zinc-700 px-4 py-1.5 text-center text-sm font-medium text-white">
                   {openingDmButtonLabel || "Button label"}
                 </div>
@@ -516,6 +524,7 @@ export default function CampaignPreview(props: CampaignPreviewProps) {
             openingDmEnabled={props.openingDmEnabled}
             openingDmMessage={props.openingDmMessage}
             openingDmButtonLabel={props.openingDmButtonLabel}
+            leadButtonLabel={props.leadButtonLabel}
             revealMessage={props.revealMessage}
             hasLink={props.hasLink}
             linkButtonLabel={props.linkButtonLabel}

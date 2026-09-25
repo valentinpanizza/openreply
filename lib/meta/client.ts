@@ -180,8 +180,15 @@ export async function sendPrivateReplyWithButton(
   commentId: string,
   text: string,
   buttonTitle: string,
-  payload: string
+  payload: string,
+  // Rendered before the main button, e.g. a lead button. Meta allows at most
+  // three buttons per template, so anything past that is dropped.
+  leadingButtons: { title: string; payload: string }[] = []
 ): Promise<{ recipient_id: string; message_id: string }> {
+  const buttons = [...leadingButtons, { title: buttonTitle, payload }]
+    .slice(0, 3)
+    .map((b) => ({ type: "postback", title: b.title.slice(0, 20), payload: b.payload }));
+
   const response = await fetch(
     `${instagramGraphBase()}/${instagramAccountId}/messages`,
     {
@@ -199,9 +206,7 @@ export async function sendPrivateReplyWithButton(
               template_type: "button",
               // Button template text is capped at 640 chars by Meta.
               text: text.slice(0, 640),
-              buttons: [
-                { type: "postback", title: buttonTitle.slice(0, 20), payload },
-              ],
+              buttons,
             },
           },
         },

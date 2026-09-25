@@ -189,6 +189,9 @@ model Automation {
   openingDmEnabled     Boolean @default(false)
   openingDmMessage     String?
   openingDmButtonLabel String?
+  // Optional second button on the opening DM, rendered before the main one.
+  // It delivers the same link, but whoever taps it is saved as a Lead.
+  leadButtonLabel      String?
   linkButtonLabel      String?
   requireFollow           Boolean @default(false)
   followPromptMessage     String?
@@ -410,4 +413,23 @@ model ZernioConnection {
 model PostbackDelivery {
   id String @id
   createdAt DateTime @default(now())
+}
+
+// Someone who tapped a campaign's lead button in the opening DM — e.g. "I have
+// a business". One row per person per campaign: the unique key is what keeps a
+// repeat tap from notifying twice. notifiedAt is set once the lead webhook has
+// accepted it, so a retried notification never sends a duplicate.
+model Lead {
+  id                 String    @id @default(cuid())
+  workspaceId        String
+  automationId       String
+  instagramAccountId String
+  userId             String
+  username           String?
+  commentText        String?
+  notifiedAt         DateTime?
+  createdAt          DateTime  @default(now())
+
+  @@unique([automationId, userId])
+  @@index([workspaceId])
 }
