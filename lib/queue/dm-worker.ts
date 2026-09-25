@@ -654,7 +654,9 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
           commentId: commentId,
           text: openingText,
           buttonTitle: automation.openingDmButtonLabel as string,
-          payload: openingPayload,
+          // Both opening-DM buttons carry a marker, so a tap on them can be
+          // told apart from the follow prompt's own "I'm following" button.
+          payload: `${openingPayload}:open`,
           postId: mediaId,
           leadingButtons: automation.leadButtonLabel
             ? [{ title: automation.leadButtonLabel, payload: `${openingPayload}:lead` }]
@@ -840,13 +842,15 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
 
   const isFollowCheck = payload.startsWith("followcheck:");
   if (!isFollowCheck && !payload.startsWith("reveal:")) return;
-  // The lead button reuses the main button's payload with a ":lead" suffix, so
-  // it runs the same follow gate and delivers the same link; the suffix only
-  // marks the person as a lead. Automation ids are cuids and contain no colon.
+  // Opening-DM buttons append a marker to the payload: ":open" on the main
+  // button, ":lead" on the lead button. Both run the same follow gate and
+  // deliver the same link; ":lead" also marks the person as a lead. Automation
+  // ids are cuids and contain no colon.
   const [automationId, marker] = payload
     .slice(isFollowCheck ? "followcheck:".length : "reveal:".length)
     .split(":");
   const isLeadTap = marker === "lead";
+  const fromOpeningDm = marker === "open" || isLeadTap;
 
   const automation = await prisma.automation.findFirst({
     where: { id: automationId, isActive: true, ...connectionScope(job.data) },
@@ -944,48 +948,54 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
     if (follows === false) {
       if (fallback) return;
 
-      // First `false` on a button tap: give the follow time to register and
-      // look again, rather than rejecting someone who just followed.
-      //
-      // The job id is bucketed by the recheck window, not fixed per user.
-      // BullMQ keeps completed jobs (removeOnComplete: count 1000) and silently
-      // drops an add whose id is still retained, so a fixed id let a person be
-      // re-checked once and then never again — their next false tap did
-      // nothing at all, no link and no prompt. Bucketing still collapses a burst
-      // of taps into a single re-check, which is what the fixed id was for.
-      if (!job.data.followRecheck) {
-        const window = Math.floor(Date.now() / FOLLOW_RECHECK_DELAY_MS);
-        await getDMQueue().add(
-          POSTBACK_JOB_NAME,
-          { ...job.data, followRecheck: true },
-          {
-            delay: FOLLOW_RECHECK_DELAY_MS,
-            jobId: `postback_recheck_${automation.id}_${userId}_${window}`,
-          }
-        );
-        return;
-      }
+      // A tap on an opening-DM button is not a claim to follow — most people
+      // who tap it simply don't follow yet — so they get the follow prompt
+      // right away. Only the prompt's own button earns the delayed re-check;
+      // holding an opening tap for it left people staring at a silent chat.
+      if (!fromOpeningDm) {
+        // First `false` on a button tap: give the follow time to register and
+        // look again, rather than rejecting someone who just followed.
+        //
+        // The job id is bucketed by the recheck window, not fixed per user.
+        // BullMQ keeps completed jobs (removeOnComplete: count 1000) and silently
+        // drops an add whose id is still retained, so a fixed id let a person be
+        // re-checked once and then never again — their next false tap did
+        // nothing at all, no link and no prompt. Bucketing still collapses a burst
+        // of taps into a single re-check, which is what the fixed id was for.
+        if (!job.data.followRecheck) {
+          const window = Math.floor(Date.now() / FOLLOW_RECHECK_DELAY_MS);
+          await getDMQueue().add(
+            POSTBACK_JOB_NAME,
+            { ...job.data, followRecheck: true },
+            {
+              delay: FOLLOW_RECHECK_DELAY_MS,
+              jobId: `postback_recheck_${automation.id}_${userId}_${window}`,
+            }
+          );
+          return;
+        }
 
-      // Second `false`: they are genuinely not following. Record it — this
-      // branch used to return without writing anything at all, so a gate that
-      // turned people away left no trace and its rejection rate could not be
-      // measured, only guessed at from complaints.
-      await prisma.operationalEvent
-        .create({
-          data: {
-            workspaceId: automation.workspaceId,
-            source: "WORKER",
-            level: "INFO",
-            message: "Follow gate rejected a button tap",
-            payload: {
-              automationId: automation.id,
-              automationName: automation.name,
-              userId,
-              commenterName,
+        // Second `false`: they are genuinely not following. Record it — this
+        // branch used to return without writing anything at all, so a gate that
+        // turned people away left no trace and its rejection rate could not be
+        // measured, only guessed at from complaints.
+        await prisma.operationalEvent
+          .create({
+            data: {
+              workspaceId: automation.workspaceId,
+              source: "WORKER",
+              level: "INFO",
+              message: "Follow gate rejected a button tap",
+              payload: {
+                automationId: automation.id,
+                automationName: automation.name,
+                userId,
+                commenterName,
+              },
             },
-          },
-        })
-        .catch(() => {});
+          })
+          .catch(() => {});
+      }
 
       const promptText = renderMessageWithoutLink({
         message:

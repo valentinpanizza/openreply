@@ -696,7 +696,7 @@ describe("DM Worker — Full Pipeline", () => {
       "comment_555",
       "Hey commenter_user, welcome!",
       "Get the link",
-      "followcheck:auto_789"
+      "followcheck:auto_789:open"
     );
     // Follow status is verified on the tap, not at comment time.
     expect(mockGetUserFollowStatus).not.toHaveBeenCalled();
@@ -1480,6 +1480,55 @@ describe("DM Worker — follow-gate re-check", () => {
     // A fixed per-user id would collide with the retained completed job of an
     // earlier re-check and be dropped silently by BullMQ.
     expect(opts.jobId).toMatch(/^postback_recheck_auto_789_commenter_999_\d+$/);
+  });
+
+  it("prompts a non-follower right away when the tap came from the opening DM", async () => {
+    mockPrisma.automation.findFirst.mockResolvedValue(gated);
+    mockGetUserFollowStatus.mockResolvedValue(false);
+
+    await getProcessor()(
+      createMockPostbackJob({
+        instagramAccountId: "ig_456",
+        userId: "commenter_999",
+        payload: "followcheck:auto_789:open",
+      })
+    );
+
+    // Tapping the opening DM is not a claim to follow, so there is nothing to
+    // wait for: the follow prompt goes out now, not after the re-check delay.
+    expect(mockSendDirectMessageWithButton).toHaveBeenCalledWith(
+      "decrypted_token",
+      "ig_456",
+      "commenter_999",
+      expect.any(String),
+      expect.any(String),
+      "followcheck:auto_789"
+    );
+    expect(mockQueueAdd).not.toHaveBeenCalled();
+    // Nor is it a rejection: they were never told to follow before this.
+    expect(mockPrisma.operationalEvent.create).not.toHaveBeenCalled();
+  });
+
+  it("prompts a non-follower right away after a lead-button tap, keeping the lead", async () => {
+    mockPrisma.automation.findFirst.mockResolvedValue(gated);
+    mockGetUserFollowStatus.mockResolvedValue(false);
+    mockPrisma.lead.create.mockResolvedValue({ id: "lead_1" });
+
+    await getProcessor()(
+      createMockPostbackJob({
+        instagramAccountId: "ig_456",
+        userId: "commenter_999",
+        payload: "followcheck:auto_789:lead",
+      })
+    );
+
+    expect(mockPrisma.lead.create).toHaveBeenCalled();
+    expect(mockSendDirectMessageWithButton).toHaveBeenCalledTimes(1);
+    expect(mockQueueAdd).not.toHaveBeenCalledWith(
+      "process-postback",
+      expect.anything(),
+      expect.anything()
+    );
   });
 });
 
