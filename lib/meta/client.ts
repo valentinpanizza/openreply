@@ -35,8 +35,10 @@ export class RateLimitError extends MetaApiError {
 }
 
 export class PermissionError extends MetaApiError {
-  constructor(message: string, fbTraceId?: string) {
-    super(100, undefined, fbTraceId, message);
+  // The subcode is what tells apart permission errors that call for different
+  // handling (e.g. 2534025, a comment that can no longer take a private reply).
+  constructor(message: string, fbTraceId?: string, subcode?: number) {
+    super(100, subcode, fbTraceId, message);
     this.name = "PermissionError";
   }
 }
@@ -135,7 +137,7 @@ async function handleResponse<T>(response: Response): Promise<T> {
       case 10:
       case 100:
       case 200:
-        throw new PermissionError(message, traceId);
+        throw new PermissionError(message, traceId, subcode);
       default:
         throw new MetaApiError(code, subcode, traceId, message);
     }
