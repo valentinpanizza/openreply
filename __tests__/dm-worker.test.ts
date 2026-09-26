@@ -75,14 +75,16 @@ vi.mock("@/lib/meta/client", () => ({
   sendCommentReply: vi.fn(),
   MetaApiError: class MetaApiError extends Error {
     code: number;
+    subcode: number | undefined;
     constructor(
       code: number,
-      _subcode: number | undefined,
+      subcode: number | undefined,
       _fbTraceId: string | undefined,
       message: string
     ) {
       super(message);
       this.code = code;
+      this.subcode = subcode;
       this.name = "MetaApiError";
     }
   },
@@ -145,6 +147,7 @@ vi.mock("bullmq", () => {
 
 import { createDMWorker } from "../lib/queue/dm-worker";
 import { getRedisConnection } from "@/lib/queue/client";
+import { MetaApiError } from "@/lib/meta/client";
 
 const usagePeriodStart = new Date("2026-05-01T00:00:00.000Z");
 
@@ -1682,6 +1685,44 @@ describe("DM Worker — follow re-check acknowledgement", () => {
 
     expect(mockSendDirectMessage).not.toHaveBeenCalled();
     expect(mockRedisSet).not.toHaveBeenCalled();
+  });
+});
+
+describe("DM Worker — private replies Instagram refuses for good", () => {
+  function failPrivateReply(error: Error) {
+    mockSendPrivateReply.mockRejectedValue(error);
+    mockSendPrivateReplyWithLinkButton.mockRejectedValue(error);
+    mockSendPrivateReplyWithButton.mockRejectedValue(error);
+  }
+
+  it.each([
+    [2534025, "El comentario no es válido para una respuesta privada"],
+    [2534014, "No se puede encontrar al usuario solicitado."],
+  ])("marks subcode %i as never-resend and stops BullMQ retries", async (subcode, message) => {
+    failPrivateReply(new MetaApiError(100, subcode, undefined, message));
+
+    await expect(getProcessor()(createMockJob())).rejects.toMatchObject({
+      name: "UnrecoverableError",
+    });
+    // The flag the reconciler reads as handled, so no sweep re-enqueues it.
+    expect(mockPrisma.dmLog.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: "FAILED", dmDeliveryUnconfirmed: true }),
+      })
+    );
+  });
+
+  it("still retries a temporary Meta error", async () => {
+    failPrivateReply(new MetaApiError(2, 1545133, undefined, "Service temporarily unavailable"));
+
+    await expect(getProcessor()(createMockJob())).rejects.toMatchObject({
+      name: "MetaApiError",
+    });
+    expect(mockPrisma.dmLog.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: "FAILED", dmDeliveryUnconfirmed: false }),
+      })
+    );
   });
 });
 

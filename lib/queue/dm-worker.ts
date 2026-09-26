@@ -78,6 +78,32 @@ function isDeliveryUnconfirmed(error: unknown): boolean {
   );
 }
 
+/**
+ * Instagram refused the private reply for good (code 100): 2534025 "the
+ * comment is invalid for a private reply" — it already used its one private
+ * reply, is past the 7-day window, or a failed send burned it — and 2534014
+ * "user not found", when the comment or the account is gone.
+ *
+ * Observed in production: after a code 2 "Service temporarily unavailable",
+ * every retry of that comment came back 2534025. Each was logged FAILED, so
+ * BullMQ retried it and every reconciler sweep re-enqueued it: ~200 refused
+ * sends an hour, while Instagram was already rationing the account.
+ */
+function isPrivateReplyRefused(error: unknown): boolean {
+  return (
+    error instanceof MetaApiError &&
+    error.code === 100 &&
+    (error.subcode === 2534025 || error.subcode === 2534014)
+  );
+}
+
+// Never send this comment's DM again: it may already be in the inbox, or
+// Instagram will not accept it. Both cases set dmDeliveryUnconfirmed, the flag
+// the reconciler and processComment already read as "do not send again".
+function isFinalDmFailure(error: unknown): boolean {
+  return isDeliveryUnconfirmed(error) || isPrivateReplyRefused(error);
+}
+
 // How long to wait before re-checking a follow that came back false: one
 // delay per re-check, each counted from the previous check.
 //
@@ -793,7 +819,7 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
           status: "FAILED",
           attempts: job.attemptsMade + 1,
           errorMessage: formatError(error),
-          dmDeliveryUnconfirmed: isDeliveryUnconfirmed(error),
+          dmDeliveryUnconfirmed: isFinalDmFailure(error),
         },
       });
       throw error;
@@ -1691,9 +1717,9 @@ async function processJob(job: Job<DmQueueJob>): Promise<void> {
   try {
     await dispatchJob(job);
   } catch (error) {
-    // formatError() takes unknown; isDeliveryUnconfirmed() is a boolean check,
+    // formatError() takes unknown; isFinalDmFailure() is a boolean check,
     // so it does not narrow `error` the way the old instanceof test did.
-    if (isDeliveryUnconfirmed(error))
+    if (isFinalDmFailure(error))
       throw new UnrecoverableError(formatError(error));
     throw error;
   }
