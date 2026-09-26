@@ -373,6 +373,36 @@ export async function sendDirectMessage(
 }
 
 /**
+ * Send a file as a direct message. Instagram takes either text or one
+ * attachment per message, never both. Audio: aac, m4a, wav or mp4, up to 25 MB,
+ * fetched by Meta from the public `url`.
+ */
+export async function sendDirectAttachment(
+  accessToken: string,
+  instagramAccountId: string,
+  userId: string,
+  type: "audio" | "image" | "video",
+  url: string
+): Promise<{ recipient_id: string; message_id: string }> {
+  const response = await fetch(
+    `${instagramGraphBase()}/${instagramAccountId}/messages`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({
+        recipient: { id: userId },
+        message: { attachment: { type, payload: { url } } },
+      }),
+    }
+  );
+
+  return handleResponse(response);
+}
+
+/**
  * Send a direct message as a button template with up to 3 web_url buttons —
  * the reveal message plus tappable link buttons (cleaner than inline URLs).
  */

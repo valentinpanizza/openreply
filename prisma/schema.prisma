@@ -428,6 +428,10 @@ model Lead {
   username           String?
   commentText        String?
   notifiedAt         DateTime?
+  // Voice note sent automatically after capture (LEAD_AUDIO_URLS). Also set
+  // when delivery is unconfirmed, so it is never sent twice.
+  audioSentAt        DateTime?
+  audioError         String?
   createdAt          DateTime  @default(now())
 
   @@unique([automationId, userId])

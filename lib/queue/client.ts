@@ -88,17 +88,27 @@ export interface NotifyLeadJob {
   leadId: string;
 }
 
+// Sends a captured lead the automatic voice note (lib/leads/audio.ts), with a
+// delay. Its own job so it can be scheduled apart from the lead notification.
+export interface LeadAudioJob {
+  accountConnectionId?: string;
+  instagramAccountId: string;
+  leadId: string;
+}
+
 export type DmQueueJob =
   | ProcessCommentJob
   | ProcessPostbackJob
   | ProcessFollowUpJob
   | ProcessMessageJob
-  | NotifyLeadJob;
+  | NotifyLeadJob
+  | LeadAudioJob;
 
 export const POSTBACK_JOB_NAME = "process-postback";
 export const FOLLOWUP_JOB_NAME = "process-followup";
 export const MESSAGE_JOB_NAME = "process-message";
 export const LEAD_JOB_NAME = "notify-lead";
+export const LEAD_AUDIO_JOB_NAME = "send-lead-audio";
 
 let dmQueue: Queue<DmQueueJob> | null = null;
 

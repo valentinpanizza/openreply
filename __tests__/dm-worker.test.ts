@@ -16,6 +16,7 @@ const {
   mockQueueAdd,
   mockReserveWorkspaceDMSend,
   mockReleaseWorkspaceDMReservation,
+  mockSendDirectAttachment,
 } = vi.hoisted(() => ({
   mockPrisma: {
     zernioConnection: { findUnique: vi.fn() },
@@ -28,6 +29,7 @@ const {
     lead: {
       create: vi.fn(),
       findUnique: vi.fn(),
+      findFirst: vi.fn(),
       update: vi.fn(),
     },
     dmLog: {
@@ -58,6 +60,7 @@ const {
   mockQueueAdd: vi.fn(),
   mockReserveWorkspaceDMSend: vi.fn(),
   mockReleaseWorkspaceDMReservation: vi.fn(),
+  mockSendDirectAttachment: vi.fn(),
 }));
 
 vi.mock("@/lib/db/client", () => ({
@@ -72,6 +75,7 @@ vi.mock("@/lib/meta/client", () => ({
   sendDirectMessageWithButton: mockSendDirectMessageWithButton,
   sendDirectMessage: mockSendDirectMessage,
   sendDirectMessageWithLinkButton: mockSendDirectMessageWithLinkButton,
+  sendDirectAttachment: mockSendDirectAttachment,
   sendCommentReply: vi.fn(),
   MetaApiError: class MetaApiError extends Error {
     code: number;
@@ -127,6 +131,7 @@ vi.mock("@/lib/queue/client", () => ({
   FOLLOWUP_JOB_NAME: "process-followup",
   MESSAGE_JOB_NAME: "process-message",
   LEAD_JOB_NAME: "notify-lead",
+  LEAD_AUDIO_JOB_NAME: "send-lead-audio",
 }));
 
 vi.mock("bullmq", () => {
@@ -1903,5 +1908,109 @@ describe("DM Worker — lead notification", () => {
 
     expect(mockPrisma.lead.findUnique).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("DM Worker — lead voice note", () => {
+  const gated = { ...mockAutomation, requireFollow: true, trackedLinks: [] };
+  const leadRow = {
+    id: "lead_1",
+    automationId: "auto_789",
+    instagramAccountId: "ig_account_row_1",
+    userId: "commenter_999",
+    audioSentAt: null as Date | null,
+  };
+  const audioJob = { name: "send-lead-audio", data: { instagramAccountId: "ig_456", leadId: "lead_1" }, id: "a1", attemptsMade: 0 };
+  const account = { id: "ig_account_row_1", instagramId: "ig_456", accessToken: "encrypted_token_abc" };
+
+  beforeEach(() => {
+    vi.stubEnv("LEAD_AUDIO_URLS", "https://files.example/hola.m4a");
+    mockPrisma.lead.findUnique.mockResolvedValue(leadRow);
+    mockPrisma.lead.findFirst.mockResolvedValue(null);
+    mockPrisma.lead.update.mockResolvedValue({});
+    mockPrisma.instagramAccount.findUnique.mockResolvedValue(account);
+    mockSendDirectAttachment.mockResolvedValue({ recipient_id: "commenter_999", message_id: "m1" });
+  });
+
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("schedules the voice note with a delay when a lead is captured", async () => {
+    mockPrisma.automation.findFirst.mockResolvedValue(gated);
+    mockGetUserFollowStatus.mockResolvedValue(true);
+    mockPrisma.lead.create.mockResolvedValue({ id: "lead_1" });
+
+    await getProcessor()(createMockPostbackJob({
+      instagramAccountId: "ig_456", userId: "commenter_999", payload: "followcheck:auto_789:lead",
+    }));
+
+    expect(mockQueueAdd).toHaveBeenCalledWith(
+      "send-lead-audio",
+      expect.objectContaining({ leadId: "lead_1" }),
+      expect.objectContaining({ delay: expect.any(Number), jobId: "lead_audio_lead_1" })
+    );
+    const [, , opts] = mockQueueAdd.mock.calls.find(([name]) => name === "send-lead-audio")!;
+    expect(opts.delay).toBeGreaterThanOrEqual(4 * 60_000);
+  });
+
+  it("does not schedule anything without audio files configured", async () => {
+    vi.stubEnv("LEAD_AUDIO_URLS", "");
+    mockPrisma.automation.findFirst.mockResolvedValue(gated);
+    mockGetUserFollowStatus.mockResolvedValue(true);
+    mockPrisma.lead.create.mockResolvedValue({ id: "lead_1" });
+
+    await getProcessor()(createMockPostbackJob({
+      instagramAccountId: "ig_456", userId: "commenter_999", payload: "followcheck:auto_789:lead",
+    }));
+
+    expect(mockQueueAdd).not.toHaveBeenCalledWith("send-lead-audio", expect.anything(), expect.anything());
+  });
+
+  it("sends the audio as an attachment and records it", async () => {
+    await getProcessor()(audioJob);
+
+    expect(mockSendDirectAttachment).toHaveBeenCalledWith(
+      "decrypted_token", "ig_456", "commenter_999", "audio", "https://files.example/hola.m4a"
+    );
+    expect(mockPrisma.lead.update).toHaveBeenCalledWith({
+      where: { id: "lead_1" },
+      data: { audioSentAt: expect.any(Date), audioError: null },
+    });
+  });
+
+  it("sends it once per person, even across campaigns", async () => {
+    mockPrisma.lead.findFirst.mockResolvedValue({ id: "lead_other_campaign" });
+    await getProcessor()(audioJob);
+    expect(mockSendDirectAttachment).not.toHaveBeenCalled();
+  });
+
+  it("never resends after a retry once it went out", async () => {
+    mockPrisma.lead.findUnique.mockResolvedValue({ ...leadRow, audioSentAt: new Date() });
+    await getProcessor()(audioJob);
+    expect(mockSendDirectAttachment).not.toHaveBeenCalled();
+  });
+
+  it("records an unconfirmed delivery as sent, without retrying", async () => {
+    mockSendDirectAttachment.mockRejectedValue(new MetaApiError(1, undefined, undefined, "An unknown error has occurred."));
+    await expect(getProcessor()(audioJob)).resolves.toBeUndefined();
+    expect(mockPrisma.lead.update).toHaveBeenCalledWith({
+      where: { id: "lead_1" },
+      data: { audioSentAt: expect.any(Date), audioError: expect.stringContaining("unconfirmed") },
+    });
+  });
+
+  it("gives up quietly when the 24-hour window has closed", async () => {
+    mockSendDirectAttachment.mockRejectedValue(
+      new MetaApiError(10, 2534022, undefined, "Este mensaje se envía fuera del período permitido.")
+    );
+    await expect(getProcessor()(audioJob)).resolves.toBeUndefined();
+    expect(mockPrisma.lead.update).toHaveBeenCalledWith({
+      where: { id: "lead_1" },
+      data: { audioError: expect.any(String) },
+    });
+  });
+
+  it("lets BullMQ retry a temporary failure", async () => {
+    mockSendDirectAttachment.mockRejectedValue(new MetaApiError(2, 1545133, undefined, "Service temporarily unavailable"));
+    await expect(getProcessor()(audioJob)).rejects.toMatchObject({ name: "MetaApiError" });
   });
 });

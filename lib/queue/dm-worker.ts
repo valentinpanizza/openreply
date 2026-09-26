@@ -7,13 +7,16 @@ import {
   POSTBACK_JOB_NAME,
   FOLLOWUP_JOB_NAME,
   LEAD_JOB_NAME,
+  LEAD_AUDIO_JOB_NAME,
   type DmQueueJob,
   type ProcessCommentJob,
   type ProcessMessageJob,
   type ProcessPostbackJob,
   type ProcessFollowUpJob,
   type NotifyLeadJob,
+  type LeadAudioJob,
 } from "./client";
+import { leadAudioSendAt, leadAudioUrls } from "@/lib/leads/audio";
 import { prisma } from "@/lib/db/client";
 import {
   MetaApiError,
@@ -21,6 +24,7 @@ import {
   TokenExpiredError,
   getUserFollowStatus,
   sendCommentReply,
+  sendDirectAudio,
   sendDirectMessage,
   sendDirectMessageWithButton,
   sendDirectMessageWithLinkButton,
@@ -1631,6 +1635,15 @@ async function captureLead(
     });
 
     await getDMQueue().add(LEAD_JOB_NAME, { ...scope, leadId: lead.id });
+
+    if (leadAudioUrls().length > 0) {
+      const sendAt = leadAudioSendAt(new Date());
+      await getDMQueue().add(
+        LEAD_AUDIO_JOB_NAME,
+        { ...scope, leadId: lead.id },
+        { delay: Math.max(0, sendAt.getTime() - Date.now()), jobId: `lead_audio_${lead.id}` }
+      );
+    }
   } catch (error) {
     if (
       typeof error === "object" &&
@@ -1703,6 +1716,70 @@ async function processNotifyLead(job: Job<NotifyLeadJob>): Promise<void> {
   });
 }
 
+/**
+ * Send a lead the automatic voice note. One per person: someone who became a
+ * lead in two campaigns gets it once. A delivery Meta cannot confirm is
+ * recorded as sent, never repeated; a closed 24-hour window is recorded and
+ * left alone, since no retry can reopen it. Other failures throw, so BullMQ
+ * retries them, and audioSentAt is checked first so a retry never sends twice.
+ */
+async function processLeadAudio(job: Job<LeadAudioJob>): Promise<void> {
+  const urls = leadAudioUrls();
+  if (urls.length === 0) return;
+
+  const lead = await prisma.lead.findUnique({ where: { id: job.data.leadId } });
+  if (!lead || lead.audioSentAt) return;
+  const earlier = await prisma.lead.findFirst({
+    where: {
+      userId: lead.userId,
+      instagramAccountId: lead.instagramAccountId,
+      audioSentAt: { not: null },
+    },
+    select: { id: true },
+  });
+  if (earlier) return;
+
+  const account = await prisma.instagramAccount.findUnique({
+    where: { id: lead.instagramAccountId },
+  });
+  if (!account || !hasInstagramCredentials(account)) return;
+  const context = await createInstagramContext(account, `${job.id}:lead-audio`);
+
+  const url = urls[Math.floor(Math.random() * urls.length)];
+  try {
+    await sendDirectAudio({
+      context,
+      instagramAccountId: account.instagramId,
+      userId: lead.userId,
+      url,
+    });
+  } catch (error) {
+    if (isDeliveryUnconfirmed(error)) {
+      await prisma.lead.update({
+        where: { id: lead.id },
+        data: { audioSentAt: new Date(), audioError: `unconfirmed: ${formatError(error)}` },
+      });
+      return;
+    }
+    // Instagram localizes its messages, so the subcode is what identifies a
+    // closed window; the English text is only a fallback.
+    const windowClosed =
+      (error instanceof MetaApiError && error.subcode === 2534022) ||
+      /outside of allowed window/i.test(formatError(error));
+    await prisma.lead.update({
+      where: { id: lead.id },
+      data: { audioError: formatError(error) },
+    });
+    if (windowClosed) return;
+    throw error;
+  }
+
+  await prisma.lead.update({
+    where: { id: lead.id },
+    data: { audioSentAt: new Date(), audioError: null },
+  });
+}
+
 async function dispatchJob(job: Job<DmQueueJob>): Promise<void> {
   if (job.name === POSTBACK_JOB_NAME) {
     return processPostback(job as Job<ProcessPostbackJob>);
@@ -1715,6 +1792,9 @@ async function dispatchJob(job: Job<DmQueueJob>): Promise<void> {
   }
   if (job.name === LEAD_JOB_NAME) {
     return processNotifyLead(job as Job<NotifyLeadJob>);
+  }
+  if (job.name === LEAD_AUDIO_JOB_NAME) {
+    return processLeadAudio(job as Job<LeadAudioJob>);
   }
   return processComment(job as Job<ProcessCommentJob>);
 }

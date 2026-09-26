@@ -253,6 +253,22 @@ export async function sendDirectMessageWithLinkButton({
   });
 }
 
+export async function sendDirectAudio({
+  context,
+  instagramAccountId,
+  userId,
+  url,
+}: {
+  context: InstagramContext;
+  instagramAccountId: string;
+  userId: string;
+  url: string;
+}) {
+  if (context.provider !== "META")
+    throw new Error("Audio messages are only supported with a direct Instagram connection");
+  return meta.sendDirectAttachment(context.accessToken, instagramAccountId, userId, "audio", url);
+}
+
 export async function sendCommentReply({
   context,
   commentId,
