@@ -34,6 +34,28 @@ export function replaceUrlWithTrackedPlaceholder(
   return message.replace(withoutTrailingSlash, "{link}");
 }
 
+// A {a|b|c} group picks one option at random on every render, so a campaign
+// does not send byte-identical text to everyone who comments: identical
+// messages to many strangers are what spam filters look for. Groups cannot
+// nest, but a {username} inside one works, because names are filled in first.
+const VARIANT_GROUP = /\{([^{}]*\|[^{}]*)\}/g;
+
+export function pickVariants(message: string, random: () => number = Math.random) {
+  return message.replace(VARIANT_GROUP, (_, options: string) => {
+    const choices = options.split("|");
+    return choices[Math.floor(random() * choices.length)];
+  });
+}
+
+// Without a name, drop the placeholder and the space before it ("Hola
+// {username}!" -> "Hola!") instead of inserting a stand-in word, which read
+// as "Hola there!" in any language but English.
+function fillUsername(message: string, commenterName?: string | null) {
+  return commenterName
+    ? message.replace(/\{username\}/gi, commenterName)
+    : message.replace(/\s*\{username\}/gi, "");
+}
+
 /**
  * Personalize {username} and strip the {link} token — used when the link is
  * delivered as a separate button rather than inline in the message text.
@@ -45,8 +67,7 @@ export function renderMessageWithoutLink({
   message: string;
   commenterName?: string | null;
 }) {
-  return message
-    .replace(/\{username\}/gi, commenterName ?? "there")
+  return pickVariants(fillUsername(message, commenterName))
     .replace(/\s*\{link\}\s*/gi, " ")
     .trim();
 }
@@ -72,7 +93,7 @@ export function renderMessageWithTracking({
   trackedLinks?: MessageTrackedLink[];
   baseUrl?: string;
 }) {
-  let rendered = message.replace(/\{username\}/gi, commenterName ?? "there");
+  let rendered = pickVariants(fillUsername(message, commenterName));
   const primaryLink = trackedLinks?.[0];
 
   if (!primaryLink) return rendered;

@@ -42,6 +42,7 @@ import {
 import { recordWorkerAlert } from "@/lib/ops/worker-health";
 import {
   buildTrackedUrl,
+  pickVariants,
   renderMessageWithTracking,
   renderMessageWithoutLink,
 } from "@/lib/tracking/message";
@@ -905,7 +906,12 @@ async function sendFollowRecheckAck({
       // the re-check sends, and claiming it here would suppress that message.
       operationId: operationId ? `${operationId}:ack` : null,
       send: () =>
-        sendDirectMessage({ context, instagramAccountId, userId, message }),
+        sendDirectMessage({
+          context,
+          instagramAccountId,
+          userId,
+          message: pickVariants(message),
+        }),
     });
   } catch (error) {
     console.log(

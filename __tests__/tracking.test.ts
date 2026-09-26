@@ -7,6 +7,8 @@ import {
 import {
   buildTrackedUrl,
   extractFirstUrl,
+  pickVariants,
+  renderMessageWithoutLink,
   renderMessageWithTracking,
   replaceUrlWithTrackedPlaceholder,
 } from "../lib/tracking/message";
@@ -108,5 +110,41 @@ describe("campaign analytics helpers", () => {
       { keyword: "LINK", count: 7 },
       { keyword: "PRICE", count: 3 },
     ]);
+  });
+});
+
+describe("message variants", () => {
+  it("picks one option from each {a|b} group", () => {
+    const first = () => 0;
+    const last = () => 0.99;
+    expect(pickVariants("{Hola|Buenas|Qué tal}, ¿{todo bien|cómo va}?", first)).toBe("Hola, ¿todo bien?");
+    expect(pickVariants("{Hola|Buenas|Qué tal}, ¿{todo bien|cómo va}?", last)).toBe("Qué tal, ¿cómo va?");
+  });
+
+  it("leaves placeholders and plain braces alone", () => {
+    expect(pickVariants("Hola {username}, acá va {link}")).toBe("Hola {username}, acá va {link}");
+  });
+
+  it("fills the name before picking, so it can sit inside a group", () => {
+    const rendered = renderMessageWithoutLink({
+      message: "{Listo {username} 🙌|Listo {username} 🙌}",
+      commenterName: "ana",
+    });
+    expect(rendered).toBe("Listo ana 🙌");
+  });
+
+  it("drops the name cleanly when it is unknown", () => {
+    expect(renderMessageWithoutLink({ message: "¡Hola {username}! Acá va", commenterName: null }))
+      .toBe("¡Hola! Acá va");
+  });
+
+  it("varies messages with a tracked link too", () => {
+    const rendered = renderMessageWithTracking({
+      message: "{Listo|Listo} {username}: {link}",
+      commenterName: "ana",
+      trackedLinks: [{ slug: "abc", destinationUrl: "https://example.com" }],
+      baseUrl: "https://t.example",
+    });
+    expect(rendered).toBe("Listo ana: https://t.example/r/abc");
   });
 });
