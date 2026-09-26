@@ -75,6 +75,8 @@ export interface ProcessMessageJob {
   messageId: string;
   messageText: string;
   senderId: string;
+  // Set when the message is (or starts with) an attachment, e.g. "audio".
+  attachmentType?: string;
 }
 
 // Tells LEAD_WEBHOOK_URL about a newly captured Lead. A job of its own so a

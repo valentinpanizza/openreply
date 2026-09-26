@@ -432,6 +432,9 @@ model Lead {
   // when delivery is unconfirmed, so it is never sent twice.
   audioSentAt        DateTime?
   audioError         String?
+  // Their first message after the voice note, which pinged the owner. Once
+  // per lead, so a conversation does not ping on every message.
+  repliedAt          DateTime?
   createdAt          DateTime  @default(now())
 
   @@unique([automationId, userId])

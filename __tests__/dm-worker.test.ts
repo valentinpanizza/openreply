@@ -31,6 +31,7 @@ const {
       findUnique: vi.fn(),
       findFirst: vi.fn(),
       update: vi.fn(),
+      updateMany: vi.fn(),
     },
     dmLog: {
       findUnique: vi.fn(),
@@ -41,6 +42,7 @@ const {
     },
     instagramAccount: {
       findUnique: vi.fn(),
+      findFirst: vi.fn(),
     },
     operationalEvent: {
       create: vi.fn(),
@@ -2012,5 +2014,80 @@ describe("DM Worker — lead voice note", () => {
   it("lets BullMQ retry a temporary failure", async () => {
     mockSendDirectAttachment.mockRejectedValue(new MetaApiError(2, 1545133, undefined, "Service temporarily unavailable"));
     await expect(getProcessor()(audioJob)).rejects.toMatchObject({ name: "MetaApiError" });
+  });
+});
+
+describe("DM Worker — lead reply ping", () => {
+  const fetchMock = vi.fn();
+  const message = (data: Record<string, unknown> = {}) => ({
+    name: "process-message",
+    data: { instagramAccountId: "ig_456", messageId: "mid_1", messageText: "tengo una inmobiliaria", senderId: "lead_user", ...data },
+    id: "m1",
+    attemptsMade: 0,
+  });
+
+  beforeEach(() => {
+    vi.stubEnv("NTFY_TOPIC", "topic_x");
+    mockPrisma.automation.findMany.mockResolvedValue([]);
+    mockPrisma.instagramAccount.findFirst.mockResolvedValue({ id: "ig_account_row_1" });
+    mockPrisma.lead.findFirst.mockResolvedValue({ username: "lauty" });
+    mockPrisma.lead.updateMany.mockResolvedValue({ count: 1 });
+    fetchMock.mockResolvedValue(new Response("{}"));
+    vi.stubGlobal("fetch", fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  it("pings the owner with a link that opens the chat", async () => {
+    await getProcessor()(message());
+
+    // Only leads that already got the voice note, and only unanswered ones.
+    expect(mockPrisma.lead.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ userId: "lead_user", audioSentAt: { not: null }, repliedAt: null }),
+    }));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body).toMatchObject({
+      topic: "topic_x",
+      title: "@lauty respondió",
+      message: '"tengo una inmobiliaria"',
+      click: "https://ig.me/m/lauty",
+    });
+  });
+
+  it("describes a voice note reply, and runs no keyword trigger for it", async () => {
+    await getProcessor()(message({ messageText: "", attachmentType: "audio" }));
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).message).toBe("🎤 te mandó un audio");
+    expect(mockPrisma.automation.findMany).not.toHaveBeenCalled();
+  });
+
+  it("pings once: a later message finds the lead already answered", async () => {
+    mockPrisma.lead.updateMany.mockResolvedValue({ count: 0 });
+    await getProcessor()(message());
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("stays quiet for people who are not waiting on a voice note", async () => {
+    mockPrisma.lead.findFirst.mockResolvedValue(null);
+    await getProcessor()(message());
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("gives the ping back when ntfy refuses it, so the next message retries", async () => {
+    fetchMock.mockResolvedValue(new Response("nope", { status: 500 }));
+    await getProcessor()(message());
+    expect(mockPrisma.lead.updateMany).toHaveBeenLastCalledWith(expect.objectContaining({
+      data: { repliedAt: null },
+    }));
+  });
+
+  it("never blocks the keyword trigger when the ping breaks", async () => {
+    mockPrisma.instagramAccount.findFirst.mockRejectedValue(new Error("db down"));
+    await expect(getProcessor()(message())).resolves.toBeUndefined();
+    expect(mockPrisma.automation.findMany).toHaveBeenCalled();
   });
 });

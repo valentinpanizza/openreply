@@ -90,8 +90,10 @@ interface WebhookEntry {
 export interface WebhookMessageEvent {
   instagramAccountId: string;
   messageId: string;
+  // Empty for a message that is only an attachment, e.g. a voice note.
   messageText: string;
   senderId: string;
+  attachmentType?: string;
 }
 
 export interface WebhookPostbackEvent {
@@ -219,12 +221,15 @@ export function parseMessageEvents(
         continue;
       }
 
-      const text = message.text?.trim();
+      const text = message.text?.trim() ?? "";
+      const attachmentType = message.attachments?.[0]?.type;
       const messageId = message.mid;
       const senderId = messaging.sender?.id;
       const accountId = entry.id ?? messaging.recipient?.id;
 
-      if (!text || !messageId || !senderId || !accountId) continue;
+      // A voice note or photo has no text but is still a reply worth knowing
+      // about (lead replies); keyword triggers only ever look at text.
+      if ((!text && !attachmentType) || !messageId || !senderId || !accountId) continue;
       // Ignore anything the connected account sent to itself.
       if (senderId === accountId) continue;
 
@@ -233,6 +238,7 @@ export function parseMessageEvents(
         messageId,
         messageText: text,
         senderId,
+        ...(attachmentType ? { attachmentType } : {}),
       });
     }
   }

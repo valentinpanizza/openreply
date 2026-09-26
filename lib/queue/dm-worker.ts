@@ -1342,6 +1342,10 @@ async function processFollowUp(job: Job<ProcessFollowUpJob>): Promise<void> {
 async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
   const { instagramAccountId, messageId, messageText, senderId } = job.data;
 
+  await notifyLeadReply(job.data);
+  // Keyword triggers read text only; an attachment-only message stops here.
+  if (!messageText) return;
+
   const automations = await prisma.automation.findMany({
     where: {
       ...connectionScope(job.data),
@@ -1778,6 +1782,80 @@ async function processLeadAudio(job: Job<LeadAudioJob>): Promise<void> {
     where: { id: lead.id },
     data: { audioSentAt: new Date(), audioError: null },
   });
+}
+
+const ATTACHMENT_LABELS: Record<string, string> = {
+  audio: "🎤 te mandó un audio",
+  image: "📷 te mandó una foto",
+  video: "🎬 te mandó un video",
+};
+
+/**
+ * Ping the owner the first time a lead writes back after their voice note,
+ * with a link that opens that chat. Instagram files every conversation an app
+ * has answered under General, and there is no API to move it to Primary, so
+ * without this the replies get lost among the rest.
+ *
+ * Posts straight to ntfy (NTFY_TOPIC). Never throws: a missed ping must not
+ * stop the keyword trigger that runs after it.
+ */
+async function notifyLeadReply(data: ProcessMessageJob): Promise<void> {
+  const topic = process.env.NTFY_TOPIC;
+  if (!topic) return;
+  try {
+    const account = await prisma.instagramAccount.findFirst({
+      where: { instagramId: data.instagramAccountId },
+      select: { id: true },
+    });
+    if (!account) return;
+    const scope = {
+      userId: data.senderId,
+      instagramAccountId: account.id,
+      audioSentAt: { not: null },
+    };
+    const lead = await prisma.lead.findFirst({
+      where: { ...scope, repliedAt: null },
+      select: { username: true },
+    });
+    if (!lead) return;
+    // Claim every campaign's lead row for this person at once, so two quick
+    // messages (or a lead in two campaigns) ping only once.
+    const claimedAt = new Date();
+    const claimed = await prisma.lead.updateMany({
+      where: { ...scope, repliedAt: null },
+      data: { repliedAt: claimedAt },
+    });
+    if (claimed.count === 0) return;
+
+    const preview = data.messageText
+      ? `"${data.messageText.slice(0, 200)}"`
+      : ATTACHMENT_LABELS[data.attachmentType ?? ""] ?? "📎 te mandó un archivo";
+    const response = await fetch(process.env.NTFY_URL ?? "https://ntfy.sh", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        topic,
+        title: `${lead.username ? `@${lead.username}` : "Un lead"} respondió`,
+        message: preview,
+        // Opens that chat in the Instagram app, whatever folder it sits in.
+        click: lead.username
+          ? `https://ig.me/m/${lead.username}`
+          : "https://www.instagram.com/direct/inbox/",
+        tags: ["speech_balloon"],
+      }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) {
+      // Give the ping back so the lead's next message tries again.
+      await prisma.lead.updateMany({
+        where: { ...scope, repliedAt: claimedAt },
+        data: { repliedAt: null },
+      });
+      console.log(`[DM Worker] Lead reply ping failed: HTTP ${response.status}`);
+    }
+  } catch (error) {
+    console.log("[DM Worker] Lead reply ping failed:", formatError(error));
+  }
 }
 
 async function dispatchJob(job: Job<DmQueueJob>): Promise<void> {
