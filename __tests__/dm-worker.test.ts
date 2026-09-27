@@ -17,6 +17,9 @@ const {
   mockReserveWorkspaceDMSend,
   mockReleaseWorkspaceDMReservation,
   mockSendDirectAttachment,
+  mockReservePaceSlot,
+  mockMarkPaced,
+  mockIsPaced,
 } = vi.hoisted(() => ({
   mockPrisma: {
     zernioConnection: { findUnique: vi.fn() },
@@ -63,6 +66,9 @@ const {
   mockReserveWorkspaceDMSend: vi.fn(),
   mockReleaseWorkspaceDMReservation: vi.fn(),
   mockSendDirectAttachment: vi.fn(),
+  mockReservePaceSlot: vi.fn(),
+  mockMarkPaced: vi.fn(),
+  mockIsPaced: vi.fn(),
 }));
 
 vi.mock("@/lib/db/client", () => ({
@@ -113,6 +119,9 @@ vi.mock("@/lib/utils/keyword-matcher", () => ({
 vi.mock("@/lib/utils/rate-limiter", () => ({
   reserveDMSlot: mockReserveDMSlot,
   releaseDMSlot: mockReleaseDMSlot,
+  reservePaceSlot: mockReservePaceSlot,
+  markPaced: mockMarkPaced,
+  isPaced: mockIsPaced,
 }));
 
 vi.mock("@/lib/billing/usage", () => ({
@@ -2089,5 +2098,74 @@ describe("DM Worker — lead reply ping", () => {
     mockPrisma.instagramAccount.findFirst.mockRejectedValue(new Error("db down"));
     await expect(getProcessor()(message())).resolves.toBeUndefined();
     expect(mockPrisma.automation.findMany).toHaveBeenCalled();
+  });
+});
+
+describe("DM Worker — private reply pacing", () => {
+  beforeEach(() => {
+    vi.stubEnv("PRIVATE_REPLY_INTERVAL_SECONDS", "90");
+    mockIsPaced.mockResolvedValue(false);
+    mockMarkPaced.mockResolvedValue(undefined);
+  });
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("schedules the comment for its turn instead of sending now", async () => {
+    mockReservePaceSlot.mockImplementation(async (_a, _i, _m, now: number) => now + 10 * 60_000);
+
+    await getProcessor()(createMockJob());
+
+    expect(mockSendPrivateReply).not.toHaveBeenCalled();
+    expect(mockSendPrivateReplyWithLinkButton).not.toHaveBeenCalled();
+    expect(mockMarkPaced).toHaveBeenCalledWith("ig_456", "comment_555", expect.any(Number));
+    expect(mockQueueAdd).toHaveBeenCalledWith(
+      "process-comment",
+      expect.objectContaining({ commentId: "comment_555", pacedFor: expect.any(Number) }),
+      expect.objectContaining({ jobId: "comment_ig_456_comment_555_paced" })
+    );
+    const [, , opts] = mockQueueAdd.mock.calls[0];
+    expect(opts.delay).toBeGreaterThanOrEqual(10 * 60_000 - 1000);
+    expect(mockPrisma.dmLog.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      create: expect.objectContaining({ status: "PENDING", errorMessage: expect.stringContaining("Paced") }),
+    }));
+  });
+
+  it("sends right away when its turn is now", async () => {
+    mockReservePaceSlot.mockImplementation(async (_a, _i, _m, now: number) => now);
+    await getProcessor()(createMockJob());
+    expect(mockSendPrivateReply).toHaveBeenCalled();
+    expect(mockQueueAdd).not.toHaveBeenCalledWith("process-comment", expect.anything(), expect.anything());
+  });
+
+  it("does not take a second turn for a copy of a comment already waiting", async () => {
+    mockIsPaced.mockResolvedValue(true);
+    await getProcessor()(createMockJob());
+    expect(mockReservePaceSlot).not.toHaveBeenCalled();
+    expect(mockSendPrivateReply).not.toHaveBeenCalled();
+  });
+
+  it("goes ahead on the scheduled run without asking for another turn", async () => {
+    const job = createMockJob();
+    // A copy: createMockJob hands out the shared mockJobData object.
+    job.data = { ...job.data, pacedFor: Date.now() };
+    await getProcessor()(job);
+    expect(mockIsPaced).not.toHaveBeenCalled();
+    expect(mockReservePaceSlot).not.toHaveBeenCalled();
+    expect(mockSendPrivateReply).toHaveBeenCalled();
+  });
+
+  it("skips, with a reason, when the queue is longer than the maximum wait", async () => {
+    mockReservePaceSlot.mockResolvedValue(null);
+    await getProcessor()(createMockJob());
+    expect(mockSendPrivateReply).not.toHaveBeenCalled();
+    expect(mockPrisma.dmLog.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      create: expect.objectContaining({ status: "SKIPPED_RATE_LIMIT" }),
+    }));
+  });
+
+  it("is off without PRIVATE_REPLY_INTERVAL_SECONDS", async () => {
+    vi.stubEnv("PRIVATE_REPLY_INTERVAL_SECONDS", "");
+    await getProcessor()(createMockJob());
+    expect(mockReservePaceSlot).not.toHaveBeenCalled();
+    expect(mockSendPrivateReply).toHaveBeenCalled();
   });
 });

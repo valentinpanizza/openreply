@@ -38,7 +38,13 @@ import {
   type InstagramContext,
 } from "@/lib/instagram/provider";
 import { matchKeywords } from "@/lib/utils/keyword-matcher";
-import { reserveDMSlot, releaseDMSlot } from "@/lib/utils/rate-limiter";
+import {
+  isPaced,
+  markPaced,
+  reserveDMSlot,
+  releaseDMSlot,
+  reservePaceSlot,
+} from "@/lib/utils/rate-limiter";
 import {
   releaseWorkspaceDMReservation,
   reserveWorkspaceDMSend,
@@ -132,6 +138,16 @@ const FOLLOW_RECHECK_TOTAL_MS = FOLLOW_RECHECK_DELAYS_MS.reduce(
   (total, ms) => total + ms,
   0
 );
+
+// Private-reply pacing (see reservePaceSlot). Off unless
+// PRIVATE_REPLY_INTERVAL_SECONDS is set; read per call so tests can set it.
+function paceIntervalMs(): number {
+  return Number(process.env.PRIVATE_REPLY_INTERVAL_SECONDS ?? 0) * 1000;
+}
+function paceMaxWaitMs(): number {
+  // Short of the 7 days a comment can take a private reply, with margin.
+  return Number(process.env.PRIVATE_REPLY_MAX_WAIT_HOURS ?? 144) * 3600_000;
+}
 
 function formatError(error: unknown): string {
   if (error instanceof MetaApiError) {
@@ -440,6 +456,53 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
         },
       });
       continue;
+    }
+
+    // Pacing: a first message to this commenter waits for its turn. It comes
+    // before the public reply on purpose, so "sent you a DM" is posted when
+    // the DM actually goes out, not hours earlier.
+    if (needsDm && paceIntervalMs() > 0 && !job.data.pacedFor) {
+      // Already waiting for its turn: this is a reconciler or webhook copy.
+      if (await isPaced(instagramAccountId, commentId)) return;
+      const now = Date.now();
+      const slot = await reservePaceSlot(instagramAccountId, paceIntervalMs(), paceMaxWaitMs(), now);
+      const logRow = {
+        workspaceId: automation.workspaceId,
+        automationId: automation.id,
+        instagramAccountId: automation.instagramAccountId,
+        commenterId,
+        commenterName,
+        commentText,
+        commentId,
+        matchedKeyword: matchResult.matchedKeyword,
+      };
+      if (slot === null) {
+        const errorMessage = "Pacing queue is longer than PRIVATE_REPLY_MAX_WAIT_HOURS";
+        await prisma.dmLog.upsert({
+          where: { automationId_commentId: { automationId: automation.id, commentId } },
+          create: { ...logRow, status: "SKIPPED_RATE_LIMIT", errorMessage },
+          update: { status: "SKIPPED_RATE_LIMIT", errorMessage },
+        });
+        continue;
+      }
+      if (slot - now > 5_000) {
+        // A little jitter so the sends are not metronome-regular.
+        const delay = slot - now + Math.floor(Math.random() * 20_000);
+        const errorMessage = `Paced: scheduled for ${new Date(now + delay).toISOString()}`;
+        await markPaced(instagramAccountId, commentId, delay + 3600_000);
+        await prisma.dmLog.upsert({
+          where: { automationId_commentId: { automationId: automation.id, commentId } },
+          create: { ...logRow, status: "PENDING", errorMessage },
+          update: { errorMessage },
+        });
+        // The scheduled run re-processes the whole comment, every campaign.
+        await getDMQueue().add(
+          "process-comment",
+          { ...job.data, pacedFor: slot },
+          { delay, jobId: `comment_${instagramAccountId}_${commentId}_paced` }
+        );
+        return;
+      }
     }
 
     // Ensure a log row exists before the public reply leg (which updates it).

@@ -250,5 +250,69 @@ export async function resetRateLimit(
   await client.del(key);
 }
 
+// ─── Pacing ────────────────────────────────────────────────────────────────────
+//
+// Spaces an account's private replies out to one every `intervalMs`, on top of
+// the hourly cap above. Instagram throttled this account hard when a viral reel
+// sent private replies in bursts, and a refused private reply is lost for good
+// (the comment cannot take another), while a delayed one is not: a comment can
+// take its private reply for 7 days. So a send that would come too soon is
+// scheduled for its turn instead of attempted now.
+
+// Hands out turns in order: the next free turn is max(now, last turn +
+// interval). Returns -1 when that is further out than the maximum wait.
+const RESERVE_PACE_SLOT_SCRIPT = `
+local now = tonumber(ARGV[1])
+local interval = tonumber(ARGV[2])
+local max_wait = tonumber(ARGV[3])
+local next_free = tonumber(redis.call("GET", KEYS[1]) or "0")
+local slot = math.max(now, next_free)
+if slot - now > max_wait then
+  return -1
+end
+redis.call("SET", KEYS[1], string.format("%.0f", slot + interval), "PX", math.floor(max_wait + interval + 3600000))
+return string.format("%.0f", slot)
+`;
+
+/**
+ * Reserve this account's next private-reply turn. Returns when (epoch ms) the
+ * send may go out — `now` if it is free — or null when the queue is already
+ * longer than `maxWaitMs`.
+ */
+export async function reservePaceSlot(
+  instagramAccountId: string,
+  intervalMs: number,
+  maxWaitMs: number,
+  now: number = Date.now()
+): Promise<number | null> {
+  const result = await getRedis().eval(
+    RESERVE_PACE_SLOT_SCRIPT,
+    1,
+    `pace:dm:${instagramAccountId}`,
+    now,
+    intervalMs,
+    maxWaitMs
+  );
+  const slot = toScriptNumber(result);
+  return slot < 0 ? null : slot;
+}
+
+// A comment waiting for its turn. Every reconciler sweep re-enqueues a comment
+// that is not yet answered, and without this each copy would take another turn.
+export async function markPaced(
+  instagramAccountId: string,
+  commentId: string,
+  ttlMs: number
+): Promise<void> {
+  await getRedis().set(`paced:${instagramAccountId}:${commentId}`, "1", "PX", Math.ceil(ttlMs));
+}
+
+export async function isPaced(
+  instagramAccountId: string,
+  commentId: string
+): Promise<boolean> {
+  return (await getRedis().exists(`paced:${instagramAccountId}:${commentId}`)) === 1;
+}
+
 // Export constants for use in tests
 export { RATE_LIMIT_MAX, RATE_LIMIT_WINDOW, REQUEUE_DELAY_MS, MAX_REQUEUE_ATTEMPTS };

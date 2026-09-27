@@ -7,11 +7,13 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const { mockGet, mockEval, mockDel, mockDecr } = vi.hoisted(() => ({
+const { mockGet, mockEval, mockDel, mockDecr, mockSet, mockExists } = vi.hoisted(() => ({
   mockGet: vi.fn(),
   mockEval: vi.fn(),
   mockDel: vi.fn(),
   mockDecr: vi.fn(),
+  mockSet: vi.fn(),
+  mockExists: vi.fn(),
 }));
 
 vi.mock("ioredis", () => {
@@ -22,6 +24,8 @@ vi.mock("ioredis", () => {
     this.eval = mockEval;
     this.del = mockDel;
     this.decr = mockDecr;
+    this.set = mockSet;
+    this.exists = mockExists;
     return this;
   });
   return { default: MockRedis };
@@ -35,6 +39,9 @@ import {
   reserveDMSlot,
   releaseDMSlot,
   RATE_LIMIT_MAX,
+  reservePaceSlot,
+  markPaced,
+  isPaced,
 } from "../lib/utils/rate-limiter";
 
 beforeEach(() => {
@@ -155,5 +162,29 @@ describe("releaseDMSlot", () => {
 
     expect(count).toBe(0);
     expect(mockDel).toHaveBeenCalledWith("rate:dm:account_123");
+  });
+});
+
+describe("private reply pacing", () => {
+  it("returns the reserved turn, parsed from the script's reply", async () => {
+    mockEval.mockResolvedValue("1790000090000");
+    const slot = await reservePaceSlot("acct_1", 90_000, 3600_000, 1790000000000);
+    expect(slot).toBe(1790000090000);
+    const [, keys, key, now, interval, maxWait] = mockEval.mock.calls[0];
+    expect([keys, key, now, interval, maxWait]).toEqual([1, "pace:dm:acct_1", 1790000000000, 90_000, 3600_000]);
+  });
+
+  it("returns null when the queue is longer than the maximum wait", async () => {
+    mockEval.mockResolvedValue(-1);
+    expect(await reservePaceSlot("acct_1", 90_000, 3600_000)).toBeNull();
+  });
+
+  it("marks and checks a comment waiting for its turn", async () => {
+    await markPaced("acct_1", "c1", 90_500.4);
+    expect(mockSet).toHaveBeenCalledWith("paced:acct_1:c1", "1", "PX", 90_501);
+    mockExists.mockResolvedValue(1);
+    expect(await isPaced("acct_1", "c1")).toBe(true);
+    mockExists.mockResolvedValue(0);
+    expect(await isPaced("acct_1", "c2")).toBe(false);
   });
 });

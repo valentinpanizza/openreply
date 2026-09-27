@@ -34,6 +34,9 @@ export interface ProcessCommentJob {
   // from. Campaigns are bound to that post, so both ids have to be matched.
   originalMediaId?: string;
   requeueAttempt?: number;
+  // Set on the run scheduled for this comment's pacing turn (epoch ms), so it
+  // goes ahead instead of asking for another turn.
+  pacedFor?: number;
   // Which path enqueued this comment. It is not copied to ProcessedComment or
   // used for reconciliation dedup.
   source?: CommentSource;
