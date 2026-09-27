@@ -8,6 +8,7 @@ import {
   FOLLOWUP_JOB_NAME,
   LEAD_JOB_NAME,
   LEAD_AUDIO_JOB_NAME,
+  OPENING_DM_READ_FALLBACK_WINDOW_MS,
   type DmQueueJob,
   type ProcessCommentJob,
   type ProcessMessageJob,
@@ -1046,6 +1047,24 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
       existingReveal?.dmDeliveryUnconfirmed
     )
       return;
+
+    // Only a recent opening DM earns a fallback (same rule as the webhook that
+    // queues it). Checked here as well, so a fallback queued before that rule
+    // existed, or for an older campaign, cannot deliver a stale link.
+    const recentOpening = await prisma.dmLog.findFirst({
+      where: {
+        automationId: automation.id,
+        commenterId: userId,
+        status: "SENT",
+        dmSentAt: { gte: new Date(Date.now() - OPENING_DM_READ_FALLBACK_WINDOW_MS) },
+        NOT: [
+          { commentId: { startsWith: "reveal:" } },
+          { commentId: { startsWith: "dm:" } },
+        ],
+      },
+      select: { id: true },
+    });
+    if (!recentOpening) return;
   }
 
   // Personalize {username} from the opening DM log for this user, if present.

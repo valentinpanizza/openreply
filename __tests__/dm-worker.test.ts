@@ -143,6 +143,7 @@ vi.mock("@/lib/queue/client", () => ({
   MESSAGE_JOB_NAME: "process-message",
   LEAD_JOB_NAME: "notify-lead",
   LEAD_AUDIO_JOB_NAME: "send-lead-audio",
+  OPENING_DM_READ_FALLBACK_WINDOW_MS: 24 * 60 * 60 * 1000,
 }));
 
 vi.mock("bullmq", () => {
@@ -257,8 +258,11 @@ beforeEach(() => {
   // latter should resolve by default, or every comment would look like a
   // duplicate of an already-answered one.
   mockPrisma.dmLog.findFirst.mockImplementation(
-    async (args: { where?: { status?: string } } = {}) =>
-      args.where?.status === "SENT" ? null : { commenterName: "commenter_user" }
+    async (args: { where?: { status?: string; dmSentAt?: unknown } } = {}) =>
+      // The read fallback's recent-opening check: by default there is one.
+      args.where?.dmSentAt
+        ? { id: "opening_log" }
+        : args.where?.status === "SENT" ? null : { commenterName: "commenter_user" }
   );
   mockPrisma.dmLog.upsert.mockResolvedValue({});
   mockPrisma.dmLog.update.mockResolvedValue({});
@@ -2167,5 +2171,51 @@ describe("DM Worker — private reply pacing", () => {
     await getProcessor()(createMockJob());
     expect(mockReservePaceSlot).not.toHaveBeenCalled();
     expect(mockSendPrivateReply).toHaveBeenCalled();
+  });
+});
+
+describe("DM Worker — stale read fallbacks", () => {
+  it("does not deliver a link for a campaign whose opening DM is days old", async () => {
+    mockPrisma.automation.findFirst.mockResolvedValue({ ...mockAutomation, trackedLinks: [] });
+    mockPrisma.dmLog.findFirst.mockImplementation(async (args: { where?: { dmSentAt?: unknown; status?: string } } = {}) =>
+      args.where?.dmSentAt ? null : args.where?.status === "SENT" ? null : { commenterName: "commenter_user" });
+
+    await getProcessor()(createMockPostbackJob({
+      instagramAccountId: "ig_456", userId: "commenter_999", payload: "reveal:auto_789", fallback: true,
+    }));
+
+    expect(mockSendDirectMessage).not.toHaveBeenCalled();
+    expect(mockSendDirectMessageWithLinkButton).not.toHaveBeenCalled();
+  });
+
+  it("checks for a recent opening DM from this campaign, not links or keyword replies", async () => {
+    mockPrisma.automation.findFirst.mockResolvedValue({ ...mockAutomation, trackedLinks: [] });
+
+    await getProcessor()(createMockPostbackJob({
+      instagramAccountId: "ig_456", userId: "commenter_999", payload: "reveal:auto_789", fallback: true,
+    }));
+
+    expect(mockPrisma.dmLog.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({
+        automationId: "auto_789",
+        commenterId: "commenter_999",
+        status: "SENT",
+        dmSentAt: { gte: expect.any(Date) },
+        NOT: [{ commentId: { startsWith: "reveal:" } }, { commentId: { startsWith: "dm:" } }],
+      }),
+    }));
+    expect(mockSendDirectMessage).toHaveBeenCalled();
+  });
+
+  it("leaves real button taps alone, however old the opening DM", async () => {
+    mockPrisma.automation.findFirst.mockResolvedValue({ ...mockAutomation, trackedLinks: [] });
+    mockPrisma.dmLog.findFirst.mockImplementation(async (args: { where?: { dmSentAt?: unknown; status?: string } } = {}) =>
+      args.where?.dmSentAt ? null : args.where?.status === "SENT" ? null : { commenterName: "commenter_user" });
+
+    await getProcessor()(createMockPostbackJob({
+      instagramAccountId: "ig_456", userId: "commenter_999", payload: "reveal:auto_789",
+    }));
+
+    expect(mockSendDirectMessage).toHaveBeenCalled();
   });
 });

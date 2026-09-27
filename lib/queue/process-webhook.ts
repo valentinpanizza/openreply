@@ -1,5 +1,10 @@
 import { prisma } from '@/lib/db/client';
-import { getDMQueue, MESSAGE_JOB_NAME, POSTBACK_JOB_NAME } from '@/lib/queue/client';
+import {
+  getDMQueue,
+  MESSAGE_JOB_NAME,
+  OPENING_DM_READ_FALLBACK_WINDOW_MS,
+  POSTBACK_JOB_NAME,
+} from '@/lib/queue/client';
 import { parseCommentEvents, parseMessageEvents, parsePostbackEvents, parseReadEvents } from '@/lib/meta/webhook';
 import { Prisma, type InstagramProvider } from '@/app/generated/prisma/client';
 
@@ -137,10 +142,20 @@ export async function processInstagramWebhook({ payload: incoming, provider, wor
     );
 
     for (const event of readEvents) {
+      // A read is about the latest opening DM, not every campaign the person
+      // ever commented on. Unbounded, one read queued a link for each of them:
+      // a returning commenter got eight guides at once, from reels he had
+      // commented on days before. So: comment DMs only (not links or keyword
+      // replies), sent within the window, and just the most recent one.
       const openingLogs = await prisma.dmLog.findMany({
         where: {
           commenterId: event.userId,
           status: "SENT",
+          dmSentAt: { gte: new Date(Date.now() - OPENING_DM_READ_FALLBACK_WINDOW_MS) },
+          NOT: [
+            { commentId: { startsWith: "reveal:" } },
+            { commentId: { startsWith: "dm:" } },
+          ],
           automation: {
             isActive: true,
             openingDmEnabled: true,
@@ -149,6 +164,8 @@ export async function processInstagramWebhook({ payload: incoming, provider, wor
             },
           },
         },
+        orderBy: { dmSentAt: "desc" },
+        take: 1,
         select: {
           automation: {
             select: {

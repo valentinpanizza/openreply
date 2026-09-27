@@ -110,6 +110,10 @@ export type DmQueueJob =
   | LeadAudioJob;
 
 export const POSTBACK_JOB_NAME = "process-postback";
+
+// How recent an opening DM has to be for a read of the conversation to count
+// as reading it. See the read fallback in process-webhook and processPostback.
+export const OPENING_DM_READ_FALLBACK_WINDOW_MS = 24 * 60 * 60 * 1000;
 export const FOLLOWUP_JOB_NAME = "process-followup";
 export const MESSAGE_JOB_NAME = "process-message";
 export const LEAD_JOB_NAME = "notify-lead";
