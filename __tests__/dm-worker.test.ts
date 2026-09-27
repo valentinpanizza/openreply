@@ -164,7 +164,7 @@ vi.mock("bullmq", () => {
 
 import { createDMWorker } from "../lib/queue/dm-worker";
 import { getRedisConnection } from "@/lib/queue/client";
-import { MetaApiError } from "@/lib/meta/client";
+import { MetaApiError, sendCommentReply } from "@/lib/meta/client";
 
 const usagePeriodStart = new Date("2026-05-01T00:00:00.000Z");
 
@@ -2217,5 +2217,77 @@ describe("DM Worker — stale read fallbacks", () => {
     }));
 
     expect(mockSendDirectMessage).toHaveBeenCalled();
+  });
+});
+
+describe("DM Worker — private replies paused", () => {
+  const withPublicReply = { ...mockAutomation, publicReplyEnabled: true, publicReplyMessages: ["te lo mandé por privado 📩"] };
+
+  beforeEach(() => {
+    mockPrisma.automation.findMany.mockResolvedValue([withPublicReply]);
+    vi.mocked(sendCommentReply).mockResolvedValue({ id: "reply_1" } as never);
+  });
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("asks for an Instagram DM publicly and sends no private reply", async () => {
+    vi.stubEnv("PRIVATE_REPLIES_PAUSED_UNTIL", new Date(Date.now() + 3600e3).toISOString());
+
+    await getProcessor()(createMockJob());
+
+    expect(mockSendPrivateReply).not.toHaveBeenCalled();
+    expect(mockSendPrivateReplyWithLinkButton).not.toHaveBeenCalled();
+    const [, , text] = vi.mocked(sendCommentReply).mock.calls[0];
+    expect(text).toMatch(/^@commenter_user /);
+    expect(text).toContain("LINK");
+    expect(text).toContain("Instagram");
+    // Done for good: the reconciler must not bring it back after the pause.
+    expect(mockPrisma.dmLog.update).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ status: "SKIPPED_RATE_LIMIT", dmDeliveryUnconfirmed: true }),
+    }));
+  });
+
+  it("uses PAUSED_PUBLIC_REPLY, with the matched keyword", async () => {
+    vi.stubEnv("PRIVATE_REPLIES_PAUSED_UNTIL", new Date(Date.now() + 3600e3).toISOString());
+    vi.stubEnv("PAUSED_PUBLIC_REPLY", "Escribime {keyword} por DM de Instagram");
+
+    await getProcessor()(createMockJob());
+
+    expect(vi.mocked(sendCommentReply).mock.calls[0][2]).toBe("Escribime LINK por DM de Instagram");
+  });
+
+  it("ends on its own once the date has passed", async () => {
+    vi.stubEnv("PRIVATE_REPLIES_PAUSED_UNTIL", new Date(Date.now() - 1000).toISOString());
+
+    await getProcessor()(createMockJob());
+
+    expect(mockSendPrivateReply).toHaveBeenCalled();
+    expect(vi.mocked(sendCommentReply).mock.calls[0][2]).toBe("te lo mandé por privado 📩");
+  });
+});
+
+describe("DM Worker — one reply per inbound DM", () => {
+  const trigger = { ...mockAutomation, dmTriggerEnabled: true, requireFollow: false, trackedLinks: [] };
+  const message = {
+    name: "process-message",
+    data: { instagramAccountId: "ig_456", messageId: "mid_legal", messageText: "legal", senderId: "commenter_999" },
+    id: "m_legal",
+    attemptsMade: 0,
+  };
+
+  it("answers once even when the keyword is in several campaigns", async () => {
+    mockPrisma.automation.findMany.mockResolvedValue([trigger, { ...trigger, id: "auto_trial", name: "[TRIAL] copy" }]);
+
+    await getProcessor()(message);
+
+    expect(mockSendDirectMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not answer from another campaign when the message was already answered", async () => {
+    mockPrisma.automation.findMany.mockResolvedValue([trigger, { ...trigger, id: "auto_trial" }]);
+    mockPrisma.dmLog.findUnique.mockResolvedValueOnce({ status: "SENT" });
+
+    await getProcessor()(message);
+
+    expect(mockSendDirectMessage).not.toHaveBeenCalled();
   });
 });

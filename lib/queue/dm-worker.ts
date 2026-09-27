@@ -140,6 +140,20 @@ const FOLLOW_RECHECK_TOTAL_MS = FOLLOW_RECHECK_DELAYS_MS.reduce(
   0
 );
 
+// A pause on private replies (PRIVATE_REPLIES_PAUSED_UNTIL, an ISO date): until
+// then, a matching comment gets no DM, only a public reply asking the person to
+// write the keyword by DM (PAUSED_PUBLIC_REPLY, where {keyword} is the matched
+// keyword). Instagram's integrity system throttles an account that keeps
+// messaging strangers, and Meta's advice is to stop for 24–48 hours so the
+// counter resets; a message the person starts is never throttled. It ends on
+// its own at that date. Read per call so tests can set it.
+function privateRepliesPaused(): boolean {
+  const until = Date.parse(process.env.PRIVATE_REPLIES_PAUSED_UNTIL ?? "");
+  return Number.isFinite(until) && Date.now() < until;
+}
+const DEFAULT_PAUSED_PUBLIC_REPLY =
+  "@{username} {¡Buenas|¡Hola}! Mandame {keyword} por DM acá en Instagram y te lo paso al toque 📩";
+
 // Private-reply pacing (see reservePaceSlot). Off unless
 // PRIVATE_REPLY_INTERVAL_SECONDS is set; read per call so tests can set it.
 function paceIntervalMs(): number {
@@ -462,7 +476,8 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
     // Pacing: a first message to this commenter waits for its turn. It comes
     // before the public reply on purpose, so "sent you a DM" is posted when
     // the DM actually goes out, not hours earlier.
-    if (needsDm && paceIntervalMs() > 0 && !job.data.pacedFor) {
+    const paused = privateRepliesPaused();
+    if (needsDm && !paused && paceIntervalMs() > 0 && !job.data.pacedFor) {
       // Already waiting for its turn: this is a reconciler or webhook copy.
       if (await isPaced(instagramAccountId, commentId)) return;
       const now = Date.now();
@@ -541,8 +556,11 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
     // Public reply leg — decoupled from the DM and posted first so a DM failure
     // (e.g. a non-follower whose messaging is restricted) never suppresses it.
     // Idempotent across retries via publicReplySentAt.
-    const replyPool =
-      automation.publicReplyMessages.length > 0
+    // During a pause the reply asks for a DM instead of announcing one.
+    const pausedKeyword = (matchResult.matchedKeyword ?? automation.keywords[0] ?? "").toUpperCase();
+    const replyPool = paused
+      ? [(process.env.PAUSED_PUBLIC_REPLY || DEFAULT_PAUSED_PUBLIC_REPLY).replace(/\{keyword\}/gi, pausedKeyword)]
+      : automation.publicReplyMessages.length > 0
         ? automation.publicReplyMessages
         : automation.publicReplyMessage
           ? [automation.publicReplyMessage]
@@ -594,6 +612,22 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
     // DM already sent on an earlier pass; the public reply retry above was all
     // this run needed. Don't re-send the DM.
     if (!needsDm) continue;
+
+    // Paused: the public reply above asked for a DM; no private reply now, and
+    // none later either — when the pause ends, the comments it covered are not
+    // all messaged at once, which would be the very burst it exists to avoid.
+    // dmDeliveryUnconfirmed is the flag the reconciler reads as "do not send".
+    if (paused) {
+      await prisma.dmLog.update({
+        where: { automationId_commentId: { automationId: automation.id, commentId } },
+        data: {
+          status: "SKIPPED_RATE_LIMIT",
+          dmDeliveryUnconfirmed: true,
+          errorMessage: "Private replies paused: asked to write the keyword by DM",
+        },
+      });
+      continue;
+    }
 
     // Meta allows exactly ONE private reply per comment, ever — across every
     // campaign. When several campaigns match the same comment (duplicated
@@ -1468,13 +1502,13 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
       },
     });
 
-    // Already replied to this message (or deliberately skipped it) — a retry
-    // of the job must not send a second DM.
-    if (
-      existingLog?.status === "SENT" ||
-      existingLog?.status === "SKIPPED_PLAN_LIMIT" ||
-      existingLog?.dmDeliveryUnconfirmed
-    ) {
+    // Already answered by this campaign: the message is done, so a retry of
+    // the job must not move on and answer it again from the next campaign.
+    if (existingLog?.status === "SENT" || existingLog?.dmDeliveryUnconfirmed) {
+      return;
+    }
+    // Deliberately skipped by this campaign (plan limit): let another try.
+    if (existingLog?.status === "SKIPPED_PLAN_LIMIT") {
       continue;
     }
 
@@ -1650,6 +1684,10 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
           errorMessage: null,
         },
       });
+      // One reply per message. A keyword often sits in several campaigns
+      // (duplicated trial reels share one), and each would answer — the
+      // person would get the same guide once per campaign.
+      return;
     } catch (error) {
       await releaseWorkspaceDMReservation(
         automation.workspaceId,
