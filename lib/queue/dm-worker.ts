@@ -167,14 +167,20 @@ const DEFAULT_PAUSED_PUBLIC_REPLY =
 // The pause above, opened automatically (see recordPrivateReplyOutcome): once
 // PRIVATE_REPLY_BREAKER_THRESHOLD of the last PRIVATE_REPLY_BREAKER_WINDOW
 // first private replies were refused, private replies stop for
-// PRIVATE_REPLY_BREAKER_PAUSE_HOURS. A threshold of 0 turns it off. Read per
-// call so tests can set it.
+// PRIVATE_REPLY_BREAKER_PAUSE_HOURS. A threshold of 0 turns it off. With
+// PRIVATE_REPLY_BREAKER_ALERT_ONLY=true it only pings the owner, at most once
+// per PAUSE_HOURS, and private replies go on: a refused one already gets the
+// ask-for-a-DM public reply, so pausing saves nobody anything and costs the
+// replies that would have gone through. Read per call so tests can set it.
 function breakerSettings() {
   return {
     threshold: Number(process.env.PRIVATE_REPLY_BREAKER_THRESHOLD ?? 4),
     window: Number(process.env.PRIVATE_REPLY_BREAKER_WINDOW ?? 12),
     pauseMs: Number(process.env.PRIVATE_REPLY_BREAKER_PAUSE_HOURS ?? 24) * 3600_000,
   };
+}
+function breakerAlertOnly(): boolean {
+  return process.env.PRIVATE_REPLY_BREAKER_ALERT_ONLY === "true";
 }
 
 // Refusals that mean Instagram is filtering the account's first messages to
@@ -191,7 +197,7 @@ function isIntegrityRefusal(error: unknown): boolean {
 }
 
 async function privateReplyBreakerOpen(instagramAccountId: string): Promise<boolean> {
-  if (!(breakerSettings().threshold > 0)) return false;
+  if (!(breakerSettings().threshold > 0) || breakerAlertOnly()) return false;
   try {
     return (await privateReplyBreakerUntil(instagramAccountId)) !== null;
   } catch (error) {
@@ -216,21 +222,26 @@ async function recordPrivateReplyResult(
       hour: "2-digit",
       minute: "2-digit",
     });
-    const message = `Instagram rechazó ${refusals} de los últimos ${settings.window} primeros mensajes. Hasta el ${until} cada comentario recibe la respuesta pública pidiendo escribir por DM.`;
-    console.log(`[DM Worker] Private-reply breaker opened: ${message}`);
+    const alertOnly = breakerAlertOnly();
+    const message = alertOnly
+      ? `Instagram rechazó ${refusals} de los últimos ${settings.window} primeros mensajes. Los sigo intentando; a quien le rechaza le pido por comentario que te escriba por DM.`
+      : `Instagram rechazó ${refusals} de los últimos ${settings.window} primeros mensajes. Hasta el ${until} cada comentario recibe la respuesta pública pidiendo escribir por DM.`;
+    console.log(`[DM Worker] Private-reply breaker ${alertOnly ? "alert" : "opened"}: ${message}`);
     await prisma.operationalEvent
       .create({
         data: {
           workspaceId: automation.workspaceId,
           source: "WORKER",
           level: "WARNING",
-          message: "Private replies paused by the breaker",
+          message: alertOnly
+            ? "Instagram is refusing most private replies"
+            : "Private replies paused by the breaker",
           payload: { instagramAccountId, refusals, window: settings.window, pauseMs: settings.pauseMs },
         },
       })
       .catch(() => {});
     await pushNotification({
-      title: "Pausé las respuestas privadas",
+      title: alertOnly ? "Instagram rechaza casi todos los mensajes" : "Pausé las respuestas privadas",
       message,
       tags: ["warning"],
     });

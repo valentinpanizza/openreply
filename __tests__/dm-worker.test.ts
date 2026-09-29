@@ -2411,6 +2411,25 @@ describe("DM Worker — private-reply breaker", () => {
     expect(mockSendPrivateReply).toHaveBeenCalled();
   });
 
+  it("in alert-only mode, pings the owner but keeps sending", async () => {
+    vi.stubEnv("PRIVATE_REPLY_BREAKER_ALERT_ONLY", "true");
+    vi.stubEnv("NTFY_TOPIC", "topic_x");
+    // Even with the alert's cooldown key set, nothing is paused.
+    mockPrivateReplyBreakerUntil.mockResolvedValue(Date.now() + 3600e3);
+    refuse(new MetaApiError(100, 2534025, undefined, "El comentario no es válido para una respuesta privada"));
+    mockRecordPrivateReplyOutcome.mockResolvedValue(11);
+
+    await expect(getProcessor()(createMockJob())).rejects.toBeTruthy();
+
+    expect(mockSendPrivateReply).toHaveBeenCalled();
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.title).toBe("Instagram rechaza casi todos los mensajes");
+    expect(body.message).toContain("Los sigo intentando");
+    expect(mockPrisma.dmLog.update).not.toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ errorMessage: expect.stringContaining("breaker") }),
+    }));
+  });
+
   it("is off with a threshold of 0", async () => {
     vi.stubEnv("PRIVATE_REPLY_BREAKER_THRESHOLD", "0");
     mockPrivateReplyBreakerUntil.mockResolvedValue(Date.now() + 3600e3);
