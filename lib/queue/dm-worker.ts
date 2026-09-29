@@ -111,6 +111,14 @@ function isPrivateReplyRefused(error: unknown): boolean {
   );
 }
 
+// "Service temporarily unavailable" on a private reply: every retry of such a
+// comment came back 2534025, because the refused attempt already used the
+// comment's one private reply. Retrying only adds refusals. (Private replies
+// only: a direct message spends nothing, and its retry can go through.)
+function isPrivateReplyUnavailable(error: unknown): boolean {
+  return error instanceof MetaApiError && error.code === 2 && error.subcode === 1545133;
+}
+
 // Never send this comment's DM again: it may already be in the inbox, or
 // Instagram will not accept it. Both cases set dmDeliveryUnconfirmed, the flag
 // the reconciler and processComment already read as "do not send again".
@@ -661,60 +669,73 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
       });
     }
 
-    // Public reply leg — decoupled from the DM and posted first so a DM failure
-    // (e.g. a non-follower whose messaging is restricted) never suppresses it.
-    // Idempotent across retries via publicReplySentAt.
-    // During a pause the reply asks for a DM instead of announcing one.
+    // Public reply leg — decoupled from the DM, so a DM failure never
+    // suppresses it. Idempotent across retries via publicReplySentAt. Its text
+    // depends on the DM: the campaign's replies ("check your DMs") when one went
+    // out, and PAUSED_PUBLIC_REPLY (write the keyword by DM) when none will —
+    // during a pause, or when Instagram refused it.
     const keyword = (matchResult.matchedKeyword ?? automation.keywords[0] ?? "").toUpperCase();
-    const replyPool = paused
-      ? [(process.env.PAUSED_PUBLIC_REPLY || DEFAULT_PAUSED_PUBLIC_REPLY).replace(/\{keyword\}/gi, keyword)]
-      : automation.publicReplyMessages.length > 0
+    const askForDmReply = [
+      (process.env.PAUSED_PUBLIC_REPLY || DEFAULT_PAUSED_PUBLIC_REPLY).replace(/\{keyword\}/gi, keyword),
+    ];
+    const campaignReply =
+      automation.publicReplyMessages.length > 0
         ? automation.publicReplyMessages
         : automation.publicReplyMessage
           ? [automation.publicReplyMessage]
           : [];
-    if (
-      automation.publicReplyEnabled &&
-      replyPool.length > 0 &&
-      !existingLog?.publicReplySentAt &&
-      !existingLog?.publicReplyDeliveryUnconfirmed
-    ) {
-      try {
-        const chosen = replyPool[Math.floor(Math.random() * replyPool.length)];
-        const publicReply = renderMessageWithTracking({
-          message: chosen,
-          commenterName,
-          trackedLinks: automation.trackedLinks,
-        });
-        await sendCommentReply({
-          context: accessToken,
-          commentId: commentId,
-          message: publicReply,
-          postId: mediaId,
-        });
-        await prisma.dmLog.update({
-          where: {
-            automationId_commentId: { automationId: automation.id, commentId },
-          },
-          data: { publicReplySentAt: new Date(), publicReplyError: null },
-        });
-      } catch (error) {
-        console.error(
-          "[DM Worker] Public comment reply failed:",
-          formatError(error)
-        );
-        await prisma.dmLog
-          .update({
+    const postPublicReply = async (replyPool: string[]) => {
+      if (
+        automation.publicReplyEnabled &&
+        replyPool.length > 0 &&
+        !existingLog?.publicReplySentAt &&
+        !existingLog?.publicReplyDeliveryUnconfirmed
+      ) {
+        try {
+          const chosen = replyPool[Math.floor(Math.random() * replyPool.length)];
+          const publicReply = renderMessageWithTracking({
+            message: chosen,
+            commenterName,
+            trackedLinks: automation.trackedLinks,
+          });
+          await sendCommentReply({
+            context: accessToken,
+            commentId: commentId,
+            message: publicReply,
+            postId: mediaId,
+          });
+          await prisma.dmLog.update({
             where: {
-              automationId_commentId: {
-                automationId: automation.id,
-                commentId,
-              },
+              automationId_commentId: { automationId: automation.id, commentId },
             },
-            data: { publicReplyError: formatError(error), publicReplyDeliveryUnconfirmed: isDeliveryUnconfirmed(error) },
-          })
-          .catch(() => {});
+            data: { publicReplySentAt: new Date(), publicReplyError: null },
+          });
+        } catch (error) {
+          console.error(
+            "[DM Worker] Public comment reply failed:",
+            formatError(error)
+          );
+          await prisma.dmLog
+            .update({
+              where: {
+                automationId_commentId: {
+                  automationId: automation.id,
+                  commentId,
+                },
+              },
+              data: { publicReplyError: formatError(error), publicReplyDeliveryUnconfirmed: isDeliveryUnconfirmed(error) },
+            })
+            .catch(() => {});
+        }
       }
+    };
+
+    // With a DM to send, the public reply waits for how it went: posted first,
+    // it told people whose DM Instagram then refused to check an empty inbox.
+    // Without one, it goes out now: a retry of a reply that failed earlier, or
+    // a pause.
+    if (!needsDm || paused) {
+      await postPublicReply(!paused && alreadyDmd ? campaignReply : askForDmReply);
     }
 
     // DM already sent on an earlier pass; the public reply retry above was all
@@ -765,6 +786,7 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
           errorMessage: `Another campaign (${privateReplyUsedBy.automation?.name ?? "unknown"}) already sent the one private reply Instagram allows for this comment`,
         },
       });
+      await postPublicReply(campaignReply);
       continue;
     }
 
@@ -783,6 +805,7 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
           errorMessage: `Monthly DM limit reached (${usage.limit})`,
         },
       });
+      await postPublicReply(askForDmReply);
       continue;
     }
 
@@ -831,6 +854,7 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
             errorMessage: "Hourly Instagram DM rate limit reached",
           },
         });
+        await postPublicReply(askForDmReply);
         continue;
       }
 
@@ -1015,6 +1039,7 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
         },
       });
       await recordPrivateReplyResult(automation, instagramAccountId, false);
+      await postPublicReply(campaignReply);
     } catch (error) {
       // The rate slot was reserved before the send; this send did not deliver a
       // DM, so hand the slot back instead of burning it (and burning more on
@@ -1044,9 +1069,19 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
           status: "FAILED",
           attempts: job.attemptsMade + 1,
           errorMessage: formatError(error),
-          dmDeliveryUnconfirmed: isFinalDmFailure(error),
+          dmDeliveryUnconfirmed: isFinalDmFailure(error) || isPrivateReplyUnavailable(error),
         },
       });
+      // Final outcomes only; a retry decides the rest. Code 1 most likely
+      // delivered, so it gets the usual reply.
+      if (isDeliveryUnconfirmed(error)) {
+        await postPublicReply(campaignReply);
+      } else if (isFinalDmFailure(error) || isPrivateReplyUnavailable(error)) {
+        await postPublicReply(askForDmReply);
+      }
+      if (isPrivateReplyUnavailable(error)) {
+        throw new UnrecoverableError(formatError(error));
+      }
       throw error;
     }
   }

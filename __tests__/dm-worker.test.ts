@@ -1740,8 +1740,21 @@ describe("DM Worker — private replies Instagram refuses for good", () => {
     );
   });
 
-  it("still retries a temporary Meta error", async () => {
+  it("marks 'Service temporarily unavailable' as never-resend: that attempt used the comment's one reply", async () => {
     failPrivateReply(new MetaApiError(2, 1545133, undefined, "Service temporarily unavailable"));
+
+    await expect(getProcessor()(createMockJob())).rejects.toMatchObject({
+      name: "UnrecoverableError",
+    });
+    expect(mockPrisma.dmLog.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: "FAILED", dmDeliveryUnconfirmed: true }),
+      })
+    );
+  });
+
+  it("still retries a temporary Meta error", async () => {
+    failPrivateReply(new MetaApiError(2, undefined, undefined, "An unexpected error has occurred"));
 
     await expect(getProcessor()(createMockJob())).rejects.toMatchObject({
       name: "MetaApiError",
@@ -2523,5 +2536,73 @@ describe("DM Worker — lead question after the first tap", () => {
       "followcheck:auto_789"
     );
     expect(mockQueueAdd).not.toHaveBeenCalled();
+  });
+});
+
+describe("DM Worker — public reply follows the DM's outcome", () => {
+  const withPublicReply = { ...mockAutomation, publicReplyEnabled: true, publicReplyMessages: ["te lo mandé por privado 📩"] };
+
+  beforeEach(() => {
+    mockPrisma.automation.findMany.mockResolvedValue([withPublicReply]);
+    vi.mocked(sendCommentReply).mockReset().mockResolvedValue({ id: "reply_1" } as never);
+  });
+
+  it("says 'check your DMs' only after the DM went out", async () => {
+    await getProcessor()(createMockJob());
+
+    expect(vi.mocked(sendCommentReply).mock.calls[0][2]).toBe("te lo mandé por privado 📩");
+    expect(mockSendPrivateReply.mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(sendCommentReply).mock.invocationCallOrder[0]
+    );
+  });
+
+  it.each([
+    [100, 2534025, "El comentario no es válido para una respuesta privada"],
+    [2, 1545133, "Service temporarily unavailable"],
+  ])("asks for a DM publicly when Instagram refuses the private reply (%i/%i)", async (code, subcode, message) => {
+    mockSendPrivateReply.mockRejectedValue(new MetaApiError(code, subcode, undefined, message));
+
+    await expect(getProcessor()(createMockJob())).rejects.toBeTruthy();
+
+    expect(sendCommentReply).toHaveBeenCalledTimes(1);
+    const text = vi.mocked(sendCommentReply).mock.calls[0][2];
+    expect(text).toContain("LINK");
+    expect(text).not.toContain("te lo mandé");
+  });
+
+  it("gives a probably-delivered DM (code 1) the usual reply", async () => {
+    mockSendPrivateReply.mockRejectedValue(new MetaApiError(1, undefined, undefined, "An unknown error has occurred."));
+
+    await expect(getProcessor()(createMockJob())).rejects.toBeTruthy();
+
+    expect(vi.mocked(sendCommentReply).mock.calls[0][2]).toBe("te lo mandé por privado 📩");
+  });
+
+  it("leaves the reply to the retry when the failure may still resolve", async () => {
+    mockSendPrivateReply.mockRejectedValue(new MetaApiError(2, undefined, undefined, "An unexpected error has occurred"));
+
+    await expect(getProcessor()(createMockJob())).rejects.toBeTruthy();
+
+    expect(sendCommentReply).not.toHaveBeenCalled();
+  });
+
+  it("asks for a DM when retrying the public reply of a refused comment", async () => {
+    mockPrisma.dmLog.findUnique.mockResolvedValue({ status: "FAILED", dmDeliveryUnconfirmed: true, publicReplySentAt: null });
+
+    await getProcessor()(createMockJob());
+
+    expect(mockSendPrivateReply).not.toHaveBeenCalled();
+    expect(vi.mocked(sendCommentReply).mock.calls[0][2]).toContain("LINK");
+  });
+
+  it("keeps the usual reply when another campaign already sent the DM", async () => {
+    mockPrisma.dmLog.findFirst.mockImplementation(async (args: { where?: { status?: string } } = {}) =>
+      args.where?.status === "SENT" ? { automation: { name: "Otra" } } : { commenterName: "commenter_user" }
+    );
+
+    await getProcessor()(createMockJob());
+
+    expect(mockSendPrivateReply).not.toHaveBeenCalled();
+    expect(vi.mocked(sendCommentReply).mock.calls[0][2]).toBe("te lo mandé por privado 📩");
   });
 });
