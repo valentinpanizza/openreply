@@ -2702,3 +2702,105 @@ describe("DM Worker — lead question on a DM keyword", () => {
     expect(mockSendDirectMessageWithButton.mock.calls[0][5]).toBe("reveal:auto_789:open");
   });
 });
+
+describe("DM Worker — plain-text first message", () => {
+  const campaign = {
+    ...mockAutomation,
+    dmTriggerEnabled: true,
+    openingDmEnabled: true,
+    openingDmMessage: "¡Buenas {username}! Gracias por comentar {keyword} 🙌 ¿Te paso la guía?",
+    openingDmButtonLabel: "Sí, pasámela",
+    leadButtonLabel: "Tengo un negocio",
+    requireFollow: true,
+    followPromptMessage: "Seguime y tocá el botón",
+    followPromptButtonLabel: "Ya te sigo",
+  };
+  const redis = { set: vi.fn(), get: vi.fn(), del: vi.fn() };
+  const reply = (messageText: string, extra: Record<string, unknown> = {}) => ({
+    name: "process-message",
+    data: { instagramAccountId: "ig_456", messageId: "mid_r1", messageText, senderId: "commenter_999", ...extra },
+    id: "message_job_r1",
+    attemptsMade: 0,
+  });
+
+  beforeEach(() => {
+    redis.set.mockReset().mockResolvedValue("OK");
+    redis.get.mockReset().mockResolvedValue(null);
+    redis.del.mockReset().mockResolvedValue(1);
+    vi.mocked(getRedisConnection).mockReturnValue(redis as never);
+    vi.stubEnv("LEAD_QUESTION_MESSAGE", "Antes, una pregunta rápida 👇 ¿Tenés un negocio?");
+    vi.stubEnv("DM_LEAD_QUESTION_MESSAGE", "¡Hola! Ya te lo paso 🙌 ¿Tenés un negocio?");
+  });
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("sends the opening as text, with no button, and remembers it for the reply", async () => {
+    vi.stubEnv("OPENING_TEXT_ONLY", "true");
+    mockPrisma.automation.findMany.mockResolvedValue([campaign]);
+
+    await getProcessor()(createMockJob());
+
+    expect(mockSendPrivateReplyWithButton).not.toHaveBeenCalled();
+    expect(mockSendPrivateReply).toHaveBeenCalledWith(
+      "decrypted_token",
+      "ig_456",
+      "comment_555",
+      "¡Buenas commenter_user! Gracias por comentar LINK 🙌 ¿Te paso la guía?"
+    );
+    expect(redis.set).toHaveBeenCalledWith("text_opening:ig_456:commenter_999", "auto_789", "PX", 24 * 3600_000);
+  });
+
+  it("keeps the button without OPENING_TEXT_ONLY", async () => {
+    mockPrisma.automation.findMany.mockResolvedValue([campaign]);
+
+    await getProcessor()(createMockJob());
+
+    expect(mockSendPrivateReplyWithButton).toHaveBeenCalled();
+    expect(redis.set).not.toHaveBeenCalled();
+  });
+
+  it("continues the campaign on any reply, with the plain lead question", async () => {
+    redis.get.mockResolvedValue("auto_789");
+    mockPrisma.automation.findMany.mockResolvedValue([campaign]);
+
+    await getProcessor()(reply("dale!"));
+
+    // That campaign only, whatever its keywords or DM trigger say.
+    expect(mockPrisma.automation.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ id: "auto_789" }),
+    }));
+    expect(mockMatchKeywords).not.toHaveBeenCalled();
+    expect(mockSendDirectMessageWithButton).toHaveBeenCalledWith(
+      "decrypted_token",
+      "ig_456",
+      "commenter_999",
+      "Antes, una pregunta rápida 👇 ¿Tenés un negocio?",
+      "No tengo un negocio",
+      "followcheck:auto_789:open",
+      [{ title: "Tengo un negocio", payload: "followcheck:auto_789:lead" }]
+    );
+    // Once: the next message is an ordinary DM again.
+    expect(redis.del).toHaveBeenCalledWith("text_opening:ig_456:commenter_999");
+  });
+
+  it("continues on a reply with no text (an emoji reaction, a voice note)", async () => {
+    redis.get.mockResolvedValue("auto_789");
+    mockPrisma.automation.findMany.mockResolvedValue([campaign]);
+
+    await getProcessor()(reply("", { attachmentType: "audio" }));
+
+    expect(mockSendDirectMessageWithButton).toHaveBeenCalledTimes(1);
+    expect(mockPrisma.dmLog.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      create: expect.objectContaining({ commentText: "(reply)", status: "SENT" }),
+    }));
+  });
+
+  it("ignores a reply that is not to a text opening and has no keyword", async () => {
+    mockPrisma.automation.findMany.mockResolvedValue([campaign]);
+    mockMatchKeywords.mockReturnValue({ matched: false, matchedKeyword: null });
+
+    await getProcessor()(reply("dale!"));
+
+    expect(mockSendDirectMessageWithButton).not.toHaveBeenCalled();
+    expect(mockSendDirectMessage).not.toHaveBeenCalled();
+  });
+});

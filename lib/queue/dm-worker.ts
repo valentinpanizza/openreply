@@ -286,6 +286,43 @@ function dmLeadQuestionMessage(): string {
 }
 const DEFAULT_LEAD_QUESTION_NO_LABEL = "No tengo un negocio";
 
+// OPENING_TEXT_ONLY=true sends the first message (the private reply) as plain
+// text, with no button: after the account was flagged Instagram refused more
+// than half of the first messages to strangers, and every one of those carried
+// a button template, so text is the untried variable. Without a button there
+// is nothing to tap, so any reply to it — text, an emoji, a voice note — within
+// the 24-hour window continues that campaign, exactly as if the person had
+// written its keyword by DM.
+function openingTextOnly(): boolean {
+  return process.env.OPENING_TEXT_ONLY === "true";
+}
+const TEXT_OPENING_TTL_MS = 24 * 3600_000;
+function textOpeningKey(instagramAccountId: string, userId: string): string {
+  return `text_opening:${instagramAccountId}:${userId}`;
+}
+async function markTextOpening(instagramAccountId: string, userId: string, automationId: string) {
+  try {
+    await getRedisConnection().set(textOpeningKey(instagramAccountId, userId), automationId, "PX", TEXT_OPENING_TTL_MS);
+  } catch (error) {
+    console.log("[DM Worker] Could not remember a text opening:", formatError(error));
+  }
+}
+async function pendingTextOpening(instagramAccountId: string, userId: string): Promise<string | null> {
+  try {
+    return (await getRedisConnection().get(textOpeningKey(instagramAccountId, userId))) || null;
+  } catch (error) {
+    console.log("[DM Worker] Could not read a text opening:", formatError(error));
+    return null;
+  }
+}
+async function clearTextOpening(instagramAccountId: string, userId: string) {
+  try {
+    await getRedisConnection().del(textOpeningKey(instagramAccountId, userId));
+  } catch (error) {
+    console.log("[DM Worker] Could not clear a text opening:", formatError(error));
+  }
+}
+
 // Private-reply pacing (see reservePaceSlot). Off unless
 // PRIVATE_REPLY_INTERVAL_SECONDS is set; read per call so tests can set it.
 function paceIntervalMs(): number {
@@ -945,20 +982,31 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
         // The lead question moves to the next step (see leadQuestionMessage),
         // so this first message carries the main button alone.
         const askLeadNext = Boolean(automation.leadButtonLabel && leadQuestionMessage());
-        await sendPrivateReplyWithButton({
-          context: accessToken,
-          instagramAccountId: automation.instagramAccount.instagramId,
-          commentId: commentId,
-          text: openingText,
-          buttonTitle: automation.openingDmButtonLabel as string,
-          // Both opening-DM buttons carry a marker, so a tap on them can be
-          // told apart from the follow prompt's own "I'm following" button.
-          payload: `${openingPayload}:${askLeadNext ? "intro" : "open"}`,
-          postId: mediaId,
-          leadingButtons: automation.leadButtonLabel && !askLeadNext
-            ? [{ title: automation.leadButtonLabel, payload: `${openingPayload}:lead` }]
-            : [],
-        });
+        if (openingTextOnly()) {
+          await sendPrivateReply({
+            context: accessToken,
+            instagramAccountId: automation.instagramAccount.instagramId,
+            commentId: commentId,
+            message: openingText,
+            postId: mediaId,
+          });
+          await markTextOpening(instagramAccountId, commenterId, automation.id);
+        } else {
+          await sendPrivateReplyWithButton({
+            context: accessToken,
+            instagramAccountId: automation.instagramAccount.instagramId,
+            commentId: commentId,
+            text: openingText,
+            buttonTitle: automation.openingDmButtonLabel as string,
+            // Both opening-DM buttons carry a marker, so a tap on them can be
+            // told apart from the follow prompt's own "I'm following" button.
+            payload: `${openingPayload}:${askLeadNext ? "intro" : "open"}`,
+            postId: mediaId,
+            leadingButtons: automation.leadButtonLabel && !askLeadNext
+              ? [{ title: automation.leadButtonLabel, payload: `${openingPayload}:lead` }]
+              : [],
+          });
+        }
       } else if (sendFollowPrompt) {
         const promptText = renderMessageWithoutLink({
           message:
@@ -1666,13 +1714,16 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
   const { instagramAccountId, messageId, messageText, senderId } = job.data;
 
   await notifyLeadReply(job.data);
+  // A reply to a plain-text first message (see openingTextOnly) continues its
+  // campaign whatever it says; anything else needs a keyword.
+  const continuedId = await pendingTextOpening(instagramAccountId, senderId);
   // Keyword triggers read text only; an attachment-only message stops here.
-  if (!messageText) return;
+  if (!messageText && !continuedId) return;
 
   const automations = await prisma.automation.findMany({
     where: {
       ...connectionScope(job.data),
-      dmTriggerEnabled: true,
+      ...(continuedId ? { id: continuedId } : { dmTriggerEnabled: true }),
       isActive: true,
       instagramAccount: { instagramId: instagramAccountId },
     },
@@ -1690,7 +1741,7 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
   const dedupeId = `dm:${messageId}`;
 
   for (const automation of automations) {
-    const matchResult = automation.matchAnyWord
+    const matchResult = continuedId || automation.matchAnyWord
       ? { matched: true, matchedKeyword: null }
       : matchKeywords(
           messageText,
@@ -1724,7 +1775,7 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
       automationId: automation.id,
       instagramAccountId: automation.instagramAccountId,
       commenterId: senderId,
-      commentText: messageText,
+      commentText: messageText || "(reply)",
       commentId: dedupeId,
       matchedKeyword: matchResult.matchedKeyword,
     };
@@ -1792,7 +1843,11 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
     // postback path's fail-open one. Fail-open is only safe after a tap, where
     // the user has already claimed to follow; here it would hand the link to
     // anyone whose status the API happens not to resolve.
-    const leadQuestion = automation.leadButtonLabel ? dmLeadQuestionMessage() : "";
+    // A reply is mid-conversation (the first message already greeted them),
+    // so it gets the plain question rather than the DM greeting.
+    const leadQuestion = automation.leadButtonLabel
+      ? continuedId ? leadQuestionMessage() : dmLeadQuestionMessage()
+      : "";
     let sendFollowPrompt = false;
     if (automation.requireFollow && !leadQuestion) {
       const follows = await getUserFollowStatus({
@@ -1908,6 +1963,7 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
           errorMessage: null,
         },
       });
+      if (continuedId) await clearTextOpening(instagramAccountId, senderId);
       // One reply per message. A keyword often sits in several campaigns
       // (duplicated trial reels share one), and each would answer — the
       // person would get the same guide once per campaign.
