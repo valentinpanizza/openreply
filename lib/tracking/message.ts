@@ -72,12 +72,15 @@ export function renderMessageWithoutLink({
     .trim();
 }
 
+// TRACKING_BASE_URL puts tracked links on their own domain (e.g. one of your
+// own) without moving the app: NEXTAUTH_URL also drives sign-in and the
+// Instagram connection, which must stay where they are registered.
 export function buildTrackedUrl(slug: string, baseUrl?: string) {
   const resolvedBaseUrl =
     baseUrl ??
     (typeof window !== "undefined"
       ? window.location.origin
-      : process.env.NEXTAUTH_URL ?? "http://localhost:3000");
+      : process.env.TRACKING_BASE_URL || process.env.NEXTAUTH_URL || "http://localhost:3000");
 
   return `${resolvedBaseUrl.replace(/\/$/, "")}/r/${slug}`;
 }

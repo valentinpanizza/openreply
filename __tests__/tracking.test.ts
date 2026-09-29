@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   calculateCtr,
   normalizeTopKeywords,
@@ -146,5 +146,21 @@ describe("message variants", () => {
       baseUrl: "https://t.example",
     });
     expect(rendered).toBe("Listo ana: https://t.example/r/abc");
+  });
+});
+
+describe("tracked link domain", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("uses TRACKING_BASE_URL over the app URL", () => {
+    vi.stubEnv("NEXTAUTH_URL", "https://openreply-nine-beta.vercel.app");
+    vi.stubEnv("TRACKING_BASE_URL", "https://link.nodestudioai.com/");
+    expect(buildTrackedUrl("abc123")).toBe("https://link.nodestudioai.com/r/abc123");
+  });
+
+  it("falls back to the app URL", () => {
+    vi.stubEnv("NEXTAUTH_URL", "https://openreply-nine-beta.vercel.app");
+    vi.stubEnv("TRACKING_BASE_URL", "");
+    expect(buildTrackedUrl("abc123")).toBe("https://openreply-nine-beta.vercel.app/r/abc123");
   });
 });
