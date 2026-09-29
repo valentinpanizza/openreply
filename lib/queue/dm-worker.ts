@@ -267,6 +267,12 @@ async function pushNotification(body: { title: string; message: string; tags?: s
 function leadQuestionMessage(): string {
   return process.env.LEAD_QUESTION_MESSAGE?.trim() ?? "";
 }
+// Someone who writes the keyword by DM already asked for the resource, so they
+// get the lead question straight away — DM_LEAD_QUESTION_MESSAGE, which can
+// open with a greeting, or LEAD_QUESTION_MESSAGE.
+function dmLeadQuestionMessage(): string {
+  return process.env.DM_LEAD_QUESTION_MESSAGE?.trim() || leadQuestionMessage();
+}
 const DEFAULT_LEAD_QUESTION_NO_LABEL = "No tengo un negocio";
 
 // Private-reply pacing (see reservePaceSlot). Off unless
@@ -1775,8 +1781,9 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
     // postback path's fail-open one. Fail-open is only safe after a tap, where
     // the user has already claimed to follow; here it would hand the link to
     // anyone whose status the API happens not to resolve.
+    const leadQuestion = automation.leadButtonLabel ? dmLeadQuestionMessage() : "";
     let sendFollowPrompt = false;
-    if (automation.requireFollow) {
+    if (automation.requireFollow && !leadQuestion) {
       const follows = await getUserFollowStatus({
         context: accessToken,
         recipientId: senderId,
@@ -1810,7 +1817,23 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
     }
 
     try {
-      if (sendFollowPrompt) {
+      if (leadQuestion) {
+        // Its buttons carry the opening markers, so the gate and the link
+        // follow exactly as after a comment (see processPostback).
+        const prefix = automation.requireFollow ? "followcheck" : "reveal";
+        await sendDirectMessageWithButton({
+          context: accessToken,
+          instagramAccountId: automation.instagramAccount.instagramId,
+          userId: senderId,
+          text: renderMessageWithoutLink({ message: leadQuestion, commenterName }),
+          buttonTitle:
+            process.env.LEAD_QUESTION_NO_LABEL?.trim() || DEFAULT_LEAD_QUESTION_NO_LABEL,
+          payload: `${prefix}:${automation.id}:open`,
+          leadingButtons: [
+            { title: automation.leadButtonLabel as string, payload: `${prefix}:${automation.id}:lead` },
+          ],
+        });
+      } else if (sendFollowPrompt) {
         const promptText = renderMessageWithoutLink({
           message:
             automation.followPromptMessage ||

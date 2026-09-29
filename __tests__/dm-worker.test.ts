@@ -2606,3 +2606,80 @@ describe("DM Worker — public reply follows the DM's outcome", () => {
     expect(vi.mocked(sendCommentReply).mock.calls[0][2]).toBe("te lo mandé por privado 📩");
   });
 });
+
+describe("DM Worker — lead question on a DM keyword", () => {
+  const dmCampaign = {
+    ...mockAutomation,
+    dmTriggerEnabled: true,
+    requireFollow: true,
+    leadButtonLabel: "Tengo un negocio",
+    followPromptMessage: "Seguime y tocá el botón",
+    followPromptButtonLabel: "Ya te sigo",
+  };
+  const message = {
+    name: "process-message",
+    data: { instagramAccountId: "ig_456", messageId: "mid_abc", messageText: "LINK", senderId: "commenter_999" },
+    id: "message_job_001",
+    attemptsMade: 0,
+  };
+
+  beforeEach(() => {
+    mockPrisma.automation.findMany.mockResolvedValue([dmCampaign]);
+  });
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("asks it first, with the buttons that lead into the gate and link", async () => {
+    vi.stubEnv("LEAD_QUESTION_MESSAGE", "Una pregunta rápida 👇 ¿Tenés un negocio?");
+
+    await getProcessor()(message);
+
+    expect(mockSendDirectMessageWithButton).toHaveBeenCalledWith(
+      "decrypted_token",
+      "ig_456",
+      "commenter_999",
+      "Una pregunta rápida 👇 ¿Tenés un negocio?",
+      "No tengo un negocio",
+      "followcheck:auto_789:open",
+      [{ title: "Tengo un negocio", payload: "followcheck:auto_789:lead" }]
+    );
+    expect(mockGetUserFollowStatus).not.toHaveBeenCalled();
+    expect(mockSendDirectMessage).not.toHaveBeenCalled();
+    // Answered: the same DM is not taken up again by another campaign.
+    expect(mockPrisma.dmLog.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      create: expect.objectContaining({ status: "SENT", commentId: "dm:mid_abc" }),
+    }));
+  });
+
+  it("prefers DM_LEAD_QUESTION_MESSAGE", async () => {
+    vi.stubEnv("LEAD_QUESTION_MESSAGE", "Antes, una pregunta");
+    vi.stubEnv("DM_LEAD_QUESTION_MESSAGE", "¡Hola {username}! Ya te lo paso 🙌 ¿Tenés un negocio?");
+
+    await getProcessor()(message);
+
+    expect(mockSendDirectMessageWithButton.mock.calls[0][3]).toBe("¡Hola commenter_user! Ya te lo paso 🙌 ¿Tenés un negocio?");
+  });
+
+  it("keeps the gate first without a question configured", async () => {
+    mockGetUserFollowStatus.mockResolvedValue(false);
+
+    await getProcessor()(message);
+
+    expect(mockSendDirectMessageWithButton).toHaveBeenCalledWith(
+      "decrypted_token",
+      "ig_456",
+      "commenter_999",
+      "Seguime y tocá el botón",
+      "Ya te sigo",
+      "followcheck:auto_789"
+    );
+  });
+
+  it("uses reveal buttons for a campaign without the gate", async () => {
+    vi.stubEnv("LEAD_QUESTION_MESSAGE", "¿Tenés un negocio?");
+    mockPrisma.automation.findMany.mockResolvedValue([{ ...dmCampaign, requireFollow: false }]);
+
+    await getProcessor()(message);
+
+    expect(mockSendDirectMessageWithButton.mock.calls[0][5]).toBe("reveal:auto_789:open");
+  });
+});
