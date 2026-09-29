@@ -42,6 +42,8 @@ import { matchKeywords } from "@/lib/utils/keyword-matcher";
 import {
   isPaced,
   markPaced,
+  privateReplyBreakerUntil,
+  recordPrivateReplyOutcome,
   reserveDMSlot,
   releaseDMSlot,
   reservePaceSlot,
@@ -153,6 +155,111 @@ function privateRepliesPaused(): boolean {
 }
 const DEFAULT_PAUSED_PUBLIC_REPLY =
   "@{username} {¡Buenas|¡Hola}! Mandame {keyword} por DM acá en Instagram y te lo paso al toque 📩";
+
+// The pause above, opened automatically (see recordPrivateReplyOutcome): once
+// PRIVATE_REPLY_BREAKER_THRESHOLD of the last PRIVATE_REPLY_BREAKER_WINDOW
+// first private replies were refused, private replies stop for
+// PRIVATE_REPLY_BREAKER_PAUSE_HOURS. A threshold of 0 turns it off. Read per
+// call so tests can set it.
+function breakerSettings() {
+  return {
+    threshold: Number(process.env.PRIVATE_REPLY_BREAKER_THRESHOLD ?? 4),
+    window: Number(process.env.PRIVATE_REPLY_BREAKER_WINDOW ?? 12),
+    pauseMs: Number(process.env.PRIVATE_REPLY_BREAKER_PAUSE_HOURS ?? 24) * 3600_000,
+  };
+}
+
+// Refusals that mean Instagram is filtering the account's first messages to
+// strangers, as seen after the account was flagged: straight away "invalid for
+// a private reply" (on a comment that could take one), or "Service temporarily
+// unavailable". Not 2534014 (the person is gone) or code 1 (probably
+// delivered), which say nothing about the account.
+function isIntegrityRefusal(error: unknown): boolean {
+  return (
+    error instanceof MetaApiError &&
+    ((error.code === 100 && error.subcode === 2534025) ||
+      (error.code === 2 && error.subcode === 1545133))
+  );
+}
+
+async function privateReplyBreakerOpen(instagramAccountId: string): Promise<boolean> {
+  if (!(breakerSettings().threshold > 0)) return false;
+  try {
+    return (await privateReplyBreakerUntil(instagramAccountId)) !== null;
+  } catch (error) {
+    console.log("[DM Worker] Could not read the private-reply breaker:", formatError(error));
+    return false;
+  }
+}
+
+async function recordPrivateReplyResult(
+  automation: { workspaceId: string },
+  instagramAccountId: string,
+  refused: boolean
+): Promise<void> {
+  const settings = breakerSettings();
+  if (!(settings.threshold > 0)) return;
+  try {
+    const refusals = await recordPrivateReplyOutcome(instagramAccountId, refused, settings);
+    if (!refusals) return;
+    const until = new Date(Date.now() + settings.pauseMs).toLocaleString("es-UY", {
+      timeZone: "America/Montevideo",
+      weekday: "long",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+    const message = `Instagram rechazó ${refusals} de los últimos ${settings.window} primeros mensajes. Hasta el ${until} cada comentario recibe la respuesta pública pidiendo escribir por DM.`;
+    console.log(`[DM Worker] Private-reply breaker opened: ${message}`);
+    await prisma.operationalEvent
+      .create({
+        data: {
+          workspaceId: automation.workspaceId,
+          source: "WORKER",
+          level: "WARNING",
+          message: "Private replies paused by the breaker",
+          payload: { instagramAccountId, refusals, window: settings.window, pauseMs: settings.pauseMs },
+        },
+      })
+      .catch(() => {});
+    await pushNotification({
+      title: "Pausé las respuestas privadas",
+      message,
+      tags: ["warning"],
+    });
+  } catch (error) {
+    console.log("[DM Worker] Could not record the private-reply outcome:", formatError(error));
+  }
+}
+
+// A ping to the owner's phone (ntfy, NTFY_TOPIC). Never throws.
+async function pushNotification(body: { title: string; message: string; tags?: string[]; click?: string }) {
+  const topic = process.env.NTFY_TOPIC;
+  if (!topic) return;
+  try {
+    const response = await fetch(process.env.NTFY_URL ?? "https://ntfy.sh", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ topic, ...body }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) console.log(`[DM Worker] ntfy ping failed: HTTP ${response.status}`);
+  } catch (error) {
+    console.log("[DM Worker] ntfy ping failed:", formatError(error));
+  }
+}
+
+// Asking "do you have a business?" in the first message to a stranger reads as
+// the opener of a business-opportunity scam, and it is what the account was
+// sending, identically, to hundreds of strangers the day it was suspended for
+// "fraud and deception". With LEAD_QUESTION_MESSAGE set, a campaign with a lead
+// button asks it one step later instead: the first message (the private reply)
+// only offers the resource, with the main button alone; tapping it opens the
+// conversation, and the question goes out as a direct message with the lead
+// button and LEAD_QUESTION_NO_LABEL. Both then run the usual gate and link.
+function leadQuestionMessage(): string {
+  return process.env.LEAD_QUESTION_MESSAGE?.trim() ?? "";
+}
+const DEFAULT_LEAD_QUESTION_NO_LABEL = "No tengo un negocio";
 
 // Private-reply pacing (see reservePaceSlot). Off unless
 // PRIVATE_REPLY_INTERVAL_SECONDS is set; read per call so tests can set it.
@@ -476,7 +583,8 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
     // Pacing: a first message to this commenter waits for its turn. It comes
     // before the public reply on purpose, so "sent you a DM" is posted when
     // the DM actually goes out, not hours earlier.
-    const paused = privateRepliesPaused();
+    const breakerOpen = needsDm && !privateRepliesPaused() && (await privateReplyBreakerOpen(instagramAccountId));
+    const paused = privateRepliesPaused() || breakerOpen;
     if (needsDm && !paused && paceIntervalMs() > 0 && !job.data.pacedFor) {
       // Already waiting for its turn: this is a reconciler or webhook copy.
       if (await isPaced(instagramAccountId, commentId)) return;
@@ -557,9 +665,9 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
     // (e.g. a non-follower whose messaging is restricted) never suppresses it.
     // Idempotent across retries via publicReplySentAt.
     // During a pause the reply asks for a DM instead of announcing one.
-    const pausedKeyword = (matchResult.matchedKeyword ?? automation.keywords[0] ?? "").toUpperCase();
+    const keyword = (matchResult.matchedKeyword ?? automation.keywords[0] ?? "").toUpperCase();
     const replyPool = paused
-      ? [(process.env.PAUSED_PUBLIC_REPLY || DEFAULT_PAUSED_PUBLIC_REPLY).replace(/\{keyword\}/gi, pausedKeyword)]
+      ? [(process.env.PAUSED_PUBLIC_REPLY || DEFAULT_PAUSED_PUBLIC_REPLY).replace(/\{keyword\}/gi, keyword)]
       : automation.publicReplyMessages.length > 0
         ? automation.publicReplyMessages
         : automation.publicReplyMessage
@@ -623,7 +731,9 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
         data: {
           status: "SKIPPED_RATE_LIMIT",
           dmDeliveryUnconfirmed: true,
-          errorMessage: "Private replies paused: asked to write the keyword by DM",
+          errorMessage: breakerOpen
+            ? "Private replies paused by the breaker: asked to write the keyword by DM"
+            : "Private replies paused: asked to write the keyword by DM",
         },
       });
       continue;
@@ -781,14 +891,19 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
 
     try {
       if (useOpeningDm) {
+        // {keyword}: the word they commented, so the first message reads as
+        // the answer to their request that it is.
         const openingText = renderMessageWithTracking({
-          message: automation.openingDmMessage as string,
+          message: (automation.openingDmMessage as string).replace(/\{keyword\}/gi, keyword),
           commenterName,
           trackedLinks: [],
         });
         const openingPayload = automation.requireFollow
           ? `followcheck:${automation.id}`
           : `reveal:${automation.id}`;
+        // The lead question moves to the next step (see leadQuestionMessage),
+        // so this first message carries the main button alone.
+        const askLeadNext = Boolean(automation.leadButtonLabel && leadQuestionMessage());
         await sendPrivateReplyWithButton({
           context: accessToken,
           instagramAccountId: automation.instagramAccount.instagramId,
@@ -797,9 +912,9 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
           buttonTitle: automation.openingDmButtonLabel as string,
           // Both opening-DM buttons carry a marker, so a tap on them can be
           // told apart from the follow prompt's own "I'm following" button.
-          payload: `${openingPayload}:open`,
+          payload: `${openingPayload}:${askLeadNext ? "intro" : "open"}`,
           postId: mediaId,
-          leadingButtons: automation.leadButtonLabel
+          leadingButtons: automation.leadButtonLabel && !askLeadNext
             ? [{ title: automation.leadButtonLabel, payload: `${openingPayload}:lead` }]
             : [],
         });
@@ -899,12 +1014,19 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
           errorMessage: null,
         },
       });
+      await recordPrivateReplyResult(automation, instagramAccountId, false);
     } catch (error) {
       // The rate slot was reserved before the send; this send did not deliver a
       // DM, so hand the slot back instead of burning it (and burning more on
       // each BullMQ retry) until the hourly TTL expires.
       if (rateLimit?.reserved) {
         await releaseDMSlot(instagramAccountId);
+      }
+      // First attempts only: a retry after "Service temporarily unavailable"
+      // comes back "invalid for a private reply" (the first attempt used the
+      // comment's one reply), which would count the same refusal twice.
+      if (job.attemptsMade === 0 && isIntegrityRefusal(error)) {
+        await recordPrivateReplyResult(automation, instagramAccountId, true);
       }
       await releaseWorkspaceDMReservation(
         automation.workspaceId,
@@ -1041,7 +1163,10 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
     .slice(isFollowCheck ? "followcheck:".length : "reveal:".length)
     .split(":");
   const isLeadTap = marker === "lead";
-  const fromOpeningDm = marker === "open" || isLeadTap;
+  // ":intro" is the first message's only button when the lead question comes
+  // one step later (see leadQuestionMessage).
+  const isIntroTap = marker === "intro";
+  const fromOpeningDm = marker === "open" || isLeadTap || isIntroTap;
 
   const automation = await prisma.automation.findFirst({
     where: { id: automationId, isActive: true, ...connectionScope(job.data) },
@@ -1142,6 +1267,36 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
           )
           .digest("hex")
       : null;
+
+  // The tap opened the conversation: now ask the lead question, whose two
+  // buttons carry the usual ":lead" / ":open" markers into the gate and link.
+  // Without a question configured (unset since the first message went out),
+  // the tap simply counts as the opening button.
+  const leadQuestion = leadQuestionMessage();
+  if (isIntroTap && !fallback && leadQuestion && automation.leadButtonLabel) {
+    const prefix = isFollowCheck ? "followcheck" : "reveal";
+    try {
+      await sendPostbackOnce({
+        operationId,
+        send: () =>
+          sendDirectMessageWithButton({
+            context: accessToken,
+            instagramAccountId: automation.instagramAccount.instagramId,
+            userId,
+            text: renderMessageWithoutLink({ message: leadQuestion, commenterName }),
+            buttonTitle:
+              process.env.LEAD_QUESTION_NO_LABEL?.trim() || DEFAULT_LEAD_QUESTION_NO_LABEL,
+            payload: `${prefix}:${automation.id}:open`,
+            leadingButtons: [
+              { title: automation.leadButtonLabel as string, payload: `${prefix}:${automation.id}:lead` },
+            ],
+          }),
+      });
+    } catch (error) {
+      console.log("[DM Worker] Failed to send the lead question:", formatError(error));
+    }
+    return;
+  }
 
   // Follow-gate: before revealing the link, verify the user follows. On a
   // `followcheck:` tap a non-follower gets the prompt again (no quota spent);

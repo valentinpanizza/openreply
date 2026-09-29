@@ -146,6 +146,7 @@ export async function sendDirectMessageWithButton({
   text,
   buttonTitle,
   payload,
+  leadingButtons = [],
 }: {
   context: InstagramContext;
   instagramAccountId: string;
@@ -153,6 +154,8 @@ export async function sendDirectMessageWithButton({
   text: string;
   buttonTitle: string;
   payload: string;
+  // Extra postback buttons shown before the main one (e.g. a lead button).
+  leadingButtons?: { title: string; payload: string }[];
 }) {
   if (context.provider === "META")
     return meta.sendDirectMessageWithButton(
@@ -161,13 +164,16 @@ export async function sendDirectMessageWithButton({
       userId,
       text,
       buttonTitle,
-      payload
+      payload,
+      ...(leadingButtons.length > 0 ? [leadingButtons] : [])
     );
   return sendZernioMessage({
     context,
     recipientId: userId,
     text: text,
-    buttons: [{ type: "postback", title: buttonTitle.slice(0, 20), payload }],
+    buttons: [...leadingButtons, { title: buttonTitle, payload }]
+      .slice(0, 3)
+      .map((b) => ({ type: "postback", title: b.title.slice(0, 20), payload: b.payload })),
   });
 }
 

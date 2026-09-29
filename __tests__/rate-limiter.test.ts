@@ -42,6 +42,8 @@ import {
   reservePaceSlot,
   markPaced,
   isPaced,
+  recordPrivateReplyOutcome,
+  privateReplyBreakerUntil,
 } from "../lib/utils/rate-limiter";
 
 beforeEach(() => {
@@ -186,5 +188,31 @@ describe("private reply pacing", () => {
     expect(await isPaced("acct_1", "c1")).toBe(true);
     mockExists.mockResolvedValue(0);
     expect(await isPaced("acct_1", "c2")).toBe(false);
+  });
+});
+
+describe("private reply breaker", () => {
+  const settings = { window: 12, threshold: 4, pauseMs: 24 * 3600_000 };
+
+  it("records the outcome under the account's keys", async () => {
+    mockEval.mockResolvedValue(0);
+    expect(await recordPrivateReplyOutcome("acct_1", true, settings, 1790000000000)).toBe(0);
+    const [, keys, outcomes, breaker, refused, window, threshold, pauseMs, until] = mockEval.mock.calls[0];
+    expect([keys, outcomes, breaker, refused, window, threshold, pauseMs, until]).toEqual([
+      2, "breaker:outcomes:acct_1", "breaker:open:acct_1", "1", 12, 4, 86_400_000, 1790086400000,
+    ]);
+  });
+
+  it("returns the refusals that opened it", async () => {
+    mockEval.mockResolvedValue(5);
+    expect(await recordPrivateReplyOutcome("acct_1", true, settings)).toBe(5);
+  });
+
+  it("reads when an open breaker closes", async () => {
+    mockGet.mockResolvedValue("1790086400000");
+    expect(await privateReplyBreakerUntil("acct_1")).toBe(1790086400000);
+    expect(mockGet).toHaveBeenCalledWith("breaker:open:acct_1");
+    mockGet.mockResolvedValue(null);
+    expect(await privateReplyBreakerUntil("acct_1")).toBeNull();
   });
 });

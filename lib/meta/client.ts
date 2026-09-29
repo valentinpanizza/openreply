@@ -220,9 +220,10 @@ export async function sendPrivateReplyWithButton(
 }
 
 /**
- * Send a direct message (to a user's IGSID) as a button template with a single
+ * Send a direct message (to a user's IGSID) as a button template with a
  * postback button. Used to re-prompt a user during follow-gating, so tapping
- * the button fires another `messaging_postbacks` webhook carrying `payload`.
+ * the button fires another `messaging_postbacks` webhook carrying `payload`,
+ * and to ask the lead question, whose lead button goes in `leadingButtons`.
  */
 export async function sendDirectMessageWithButton(
   accessToken: string,
@@ -230,8 +231,14 @@ export async function sendDirectMessageWithButton(
   userId: string,
   text: string,
   buttonTitle: string,
-  payload: string
+  payload: string,
+  // Rendered before the main button. Meta allows at most three per template.
+  leadingButtons: { title: string; payload: string }[] = []
 ): Promise<{ recipient_id: string; message_id: string }> {
+  const buttons = [...leadingButtons, { title: buttonTitle, payload }]
+    .slice(0, 3)
+    .map((b) => ({ type: "postback", title: b.title.slice(0, 20), payload: b.payload }));
+
   const response = await fetch(
     `${instagramGraphBase()}/${instagramAccountId}/messages`,
     {
@@ -248,9 +255,7 @@ export async function sendDirectMessageWithButton(
             payload: {
               template_type: "button",
               text: text.slice(0, 640),
-              buttons: [
-                { type: "postback", title: buttonTitle.slice(0, 20), payload },
-              ],
+              buttons,
             },
           },
         },

@@ -20,6 +20,8 @@ const {
   mockReservePaceSlot,
   mockMarkPaced,
   mockIsPaced,
+  mockPrivateReplyBreakerUntil,
+  mockRecordPrivateReplyOutcome,
 } = vi.hoisted(() => ({
   mockPrisma: {
     zernioConnection: { findUnique: vi.fn() },
@@ -69,6 +71,8 @@ const {
   mockReservePaceSlot: vi.fn(),
   mockMarkPaced: vi.fn(),
   mockIsPaced: vi.fn(),
+  mockPrivateReplyBreakerUntil: vi.fn(),
+  mockRecordPrivateReplyOutcome: vi.fn(),
 }));
 
 vi.mock("@/lib/db/client", () => ({
@@ -122,6 +126,8 @@ vi.mock("@/lib/utils/rate-limiter", () => ({
   reservePaceSlot: mockReservePaceSlot,
   markPaced: mockMarkPaced,
   isPaced: mockIsPaced,
+  privateReplyBreakerUntil: mockPrivateReplyBreakerUntil,
+  recordPrivateReplyOutcome: mockRecordPrivateReplyOutcome,
 }));
 
 vi.mock("@/lib/billing/usage", () => ({
@@ -315,6 +321,8 @@ beforeEach(() => {
     message_id: "msg_006",
   });
   mockGetUserFollowStatus.mockResolvedValue(true);
+  mockPrivateReplyBreakerUntil.mockResolvedValue(null);
+  mockRecordPrivateReplyOutcome.mockResolvedValue(0);
 });
 
 describe("DM Worker — comments left on an ad", () => {
@@ -2289,5 +2297,231 @@ describe("DM Worker — one reply per inbound DM", () => {
     await getProcessor()(message);
 
     expect(mockSendDirectMessage).not.toHaveBeenCalled();
+  });
+});
+
+describe("DM Worker — private-reply breaker", () => {
+  const withPublicReply = { ...mockAutomation, publicReplyEnabled: true, publicReplyMessages: ["te lo mandé por privado 📩"] };
+  const fetchMock = vi.fn();
+
+  beforeEach(() => {
+    mockPrisma.automation.findMany.mockResolvedValue([withPublicReply]);
+    vi.mocked(sendCommentReply).mockResolvedValue({ id: "reply_1" } as never);
+    fetchMock.mockReset().mockResolvedValue(new Response("{}"));
+    vi.stubGlobal("fetch", fetchMock);
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  function refuse(error: Error) {
+    mockSendPrivateReply.mockRejectedValue(error);
+  }
+
+  it("counts a sent first message as a success", async () => {
+    await getProcessor()(createMockJob());
+
+    expect(mockRecordPrivateReplyOutcome).toHaveBeenCalledWith(
+      "ig_456",
+      false,
+      { threshold: 4, window: 12, pauseMs: 24 * 3600_000 }
+    );
+  });
+
+  it.each([
+    [100, 2534025, "El comentario no es válido para una respuesta privada"],
+    [2, 1545133, "Service temporarily unavailable"],
+  ])("counts a first attempt refused with %i/%i", async (code, subcode, message) => {
+    refuse(new MetaApiError(code, subcode, undefined, message));
+
+    await expect(getProcessor()(createMockJob())).rejects.toBeTruthy();
+
+    expect(mockRecordPrivateReplyOutcome).toHaveBeenCalledWith("ig_456", true, expect.anything());
+  });
+
+  it("does not count a retry, whose refusal the first attempt caused", async () => {
+    refuse(new MetaApiError(100, 2534025, undefined, "El comentario no es válido para una respuesta privada"));
+
+    await expect(
+      getProcessor()({ ...createMockJob(), attemptsMade: 1 })
+    ).rejects.toBeTruthy();
+
+    expect(mockRecordPrivateReplyOutcome).not.toHaveBeenCalled();
+  });
+
+  it("does not count a person who is gone", async () => {
+    refuse(new MetaApiError(100, 2534014, undefined, "No se puede encontrar al usuario solicitado."));
+
+    await expect(getProcessor()(createMockJob())).rejects.toBeTruthy();
+
+    expect(mockRecordPrivateReplyOutcome).not.toHaveBeenCalled();
+  });
+
+  it("pings the owner and logs a warning when it opens", async () => {
+    vi.stubEnv("NTFY_TOPIC", "topic_x");
+    refuse(new MetaApiError(100, 2534025, undefined, "El comentario no es válido para una respuesta privada"));
+    mockRecordPrivateReplyOutcome.mockResolvedValue(4);
+
+    await expect(getProcessor()(createMockJob())).rejects.toBeTruthy();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body).toMatchObject({ topic: "topic_x", title: "Pausé las respuestas privadas" });
+    expect(body.message).toContain("4 de los últimos 12");
+    expect(mockPrisma.operationalEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ level: "WARNING", message: "Private replies paused by the breaker" }),
+    });
+  });
+
+  it("while open, asks for a DM publicly and sends no private reply", async () => {
+    mockPrivateReplyBreakerUntil.mockResolvedValue(Date.now() + 3600e3);
+
+    await getProcessor()(createMockJob());
+
+    expect(mockSendPrivateReply).not.toHaveBeenCalled();
+    expect(vi.mocked(sendCommentReply).mock.calls[0][2]).toContain("LINK");
+    expect(mockPrisma.dmLog.update).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        status: "SKIPPED_RATE_LIMIT",
+        dmDeliveryUnconfirmed: true,
+        errorMessage: expect.stringContaining("breaker"),
+      }),
+    }));
+  });
+
+  it("never blocks a send because Redis could not be read", async () => {
+    mockPrivateReplyBreakerUntil.mockRejectedValue(new Error("ECONNRESET"));
+
+    await getProcessor()(createMockJob());
+
+    expect(mockSendPrivateReply).toHaveBeenCalled();
+  });
+
+  it("is off with a threshold of 0", async () => {
+    vi.stubEnv("PRIVATE_REPLY_BREAKER_THRESHOLD", "0");
+    mockPrivateReplyBreakerUntil.mockResolvedValue(Date.now() + 3600e3);
+
+    await getProcessor()(createMockJob());
+
+    expect(mockSendPrivateReply).toHaveBeenCalled();
+    expect(mockRecordPrivateReplyOutcome).not.toHaveBeenCalled();
+  });
+});
+
+describe("DM Worker — lead question after the first tap", () => {
+  const opening = {
+    ...mockAutomation,
+    openingDmEnabled: true,
+    openingDmMessage: "¡Hola {username}! ¿Te paso la guía?",
+    openingDmButtonLabel: "Sí, pasámela",
+    leadButtonLabel: "Tengo un negocio",
+    requireFollow: true,
+    followPromptMessage: "Seguime y tocá el botón",
+    followPromptButtonLabel: "Ya te sigo",
+  };
+
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("sends a first message with the main button alone", async () => {
+    vi.stubEnv("LEAD_QUESTION_MESSAGE", "Una pregunta rápida: ¿tenés un negocio?");
+    mockPrisma.automation.findMany.mockResolvedValue([
+      { ...opening, openingDmMessage: "¡Hola {username}! {Vi que comentaste {keyword}|Vi que comentaste {keyword}} ¿Te paso la guía?" },
+    ]);
+    mockMatchKeywords.mockReturnValue({ matched: true, matchedKeyword: "link" });
+
+    await getProcessor()(createMockJob());
+
+    // No lead button, so nothing about a business reaches a stranger cold.
+    expect(mockSendPrivateReplyWithButton).toHaveBeenCalledWith(
+      "decrypted_token",
+      "ig_456",
+      "comment_555",
+      "¡Hola commenter_user! Vi que comentaste LINK ¿Te paso la guía?",
+      "Sí, pasámela",
+      "followcheck:auto_789:intro"
+    );
+  });
+
+  it("keeps both buttons in the first message without a question configured", async () => {
+    mockPrisma.automation.findMany.mockResolvedValue([opening]);
+
+    await getProcessor()(createMockJob());
+
+    expect(mockSendPrivateReplyWithButton).toHaveBeenCalledWith(
+      "decrypted_token",
+      "ig_456",
+      "comment_555",
+      "¡Hola commenter_user! ¿Te paso la guía?",
+      "Sí, pasámela",
+      "followcheck:auto_789:open",
+      [{ title: "Tengo un negocio", payload: "followcheck:auto_789:lead" }]
+    );
+  });
+
+  it("asks the lead question on the first tap, before any gate", async () => {
+    vi.stubEnv("LEAD_QUESTION_MESSAGE", "{Una pregunta rápida|Una pregunta rápida}: ¿tenés un negocio?");
+    mockPrisma.automation.findFirst.mockResolvedValue(opening);
+
+    await getProcessor()(
+      createMockPostbackJob({
+        instagramAccountId: "ig_456",
+        userId: "commenter_999",
+        payload: "followcheck:auto_789:intro",
+      })
+    );
+
+    expect(mockSendDirectMessageWithButton).toHaveBeenCalledWith(
+      "decrypted_token",
+      "ig_456",
+      "commenter_999",
+      "Una pregunta rápida: ¿tenés un negocio?",
+      "No tengo un negocio",
+      "followcheck:auto_789:open",
+      [{ title: "Tengo un negocio", payload: "followcheck:auto_789:lead" }]
+    );
+    expect(mockGetUserFollowStatus).not.toHaveBeenCalled();
+    expect(mockPrisma.lead.create).not.toHaveBeenCalled();
+    expect(mockSendDirectMessage).not.toHaveBeenCalled();
+  });
+
+  it("uses LEAD_QUESTION_NO_LABEL for the other button", async () => {
+    vi.stubEnv("LEAD_QUESTION_MESSAGE", "¿Tenés un negocio?");
+    vi.stubEnv("LEAD_QUESTION_NO_LABEL", "Todavía no");
+    mockPrisma.automation.findFirst.mockResolvedValue(opening);
+
+    await getProcessor()(
+      createMockPostbackJob({
+        instagramAccountId: "ig_456",
+        userId: "commenter_999",
+        payload: "followcheck:auto_789:intro",
+      })
+    );
+
+    expect(mockSendDirectMessageWithButton.mock.calls[0][4]).toBe("Todavía no");
+  });
+
+  it("treats the tap as the opening button once the question is unset", async () => {
+    mockPrisma.automation.findFirst.mockResolvedValue(opening);
+    mockGetUserFollowStatus.mockResolvedValue(false);
+
+    await getProcessor()(
+      createMockPostbackJob({
+        instagramAccountId: "ig_456",
+        userId: "commenter_999",
+        payload: "followcheck:auto_789:intro",
+      })
+    );
+
+    // Straight to the follow prompt, as an opening tap: no re-check wait.
+    expect(mockSendDirectMessageWithButton).toHaveBeenCalledWith(
+      "decrypted_token",
+      "ig_456",
+      "commenter_999",
+      "Seguime y tocá el botón",
+      "Ya te sigo",
+      "followcheck:auto_789"
+    );
+    expect(mockQueueAdd).not.toHaveBeenCalled();
   });
 });

@@ -314,5 +314,76 @@ export async function isPaced(
   return (await getRedis().exists(`paced:${instagramAccountId}:${commentId}`)) === 1;
 }
 
+// ─── Breaker ───────────────────────────────────────────────────────────────────
+//
+// Stops private replies on its own when Instagram starts refusing them. After
+// the account was flagged, Instagram refused first messages to strangers in
+// waves that opened and closed for hours, and the worker kept sending into
+// them: ~600 refusals in a day and a half, each one more of the very signal
+// that keeps the account flagged. Pacing did not help — the refusals were not
+// about volume. So the last `window` first attempts are kept, and once
+// `threshold` of them were refused the breaker opens for `pauseMs`: comments
+// get the paused public reply (ask for a DM) until it closes on its own.
+
+// KEYS[1] recent outcomes ("1" refused, "0" sent), KEYS[2] the breaker.
+// Returns the refusals counted when this call opened the breaker, else 0.
+const RECORD_PRIVATE_REPLY_SCRIPT = `
+local window = tonumber(ARGV[2])
+redis.call("LPUSH", KEYS[1], ARGV[1])
+redis.call("LTRIM", KEYS[1], 0, window - 1)
+redis.call("PEXPIRE", KEYS[1], 604800000)
+if ARGV[1] ~= "1" then
+  return 0
+end
+local refused = 0
+for _, outcome in ipairs(redis.call("LRANGE", KEYS[1], 0, -1)) do
+  if outcome == "1" then
+    refused = refused + 1
+  end
+end
+if refused < tonumber(ARGV[3]) then
+  return 0
+end
+-- Start clean once it closes: the refusals that opened it are spent.
+redis.call("DEL", KEYS[1])
+local opened = redis.call("SET", KEYS[2], ARGV[5], "PX", ARGV[4], "NX")
+if opened then
+  return refused
+end
+return 0
+`;
+
+/**
+ * Record how a first private reply went. Returns the number of refusals that
+ * opened the breaker when this call opened it, or 0.
+ */
+export async function recordPrivateReplyOutcome(
+  instagramAccountId: string,
+  refused: boolean,
+  { window, threshold, pauseMs }: { window: number; threshold: number; pauseMs: number },
+  now: number = Date.now()
+): Promise<number> {
+  const result = await getRedis().eval(
+    RECORD_PRIVATE_REPLY_SCRIPT,
+    2,
+    `breaker:outcomes:${instagramAccountId}`,
+    `breaker:open:${instagramAccountId}`,
+    refused ? "1" : "0",
+    window,
+    threshold,
+    Math.ceil(pauseMs),
+    Math.ceil(now + pauseMs)
+  );
+  return toScriptNumber(result);
+}
+
+/** When the open breaker closes (epoch ms), or null when it is closed. */
+export async function privateReplyBreakerUntil(
+  instagramAccountId: string
+): Promise<number | null> {
+  const until = Number(await getRedis().get(`breaker:open:${instagramAccountId}`));
+  return until > 0 ? until : null;
+}
+
 // Export constants for use in tests
 export { RATE_LIMIT_MAX, RATE_LIMIT_WINDOW, REQUEUE_DELAY_MS, MAX_REQUEUE_ATTEMPTS };
