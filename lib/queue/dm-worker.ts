@@ -1368,8 +1368,12 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
   const isIntroTap = marker === "intro";
   const fromOpeningDm = marker === "open" || isLeadTap || isIntroTap;
 
+  // Pausing a campaign stops it from starting conversations, not from finishing
+  // them: a tap on one of its buttons is the person asking, and leaving them
+  // without an answer helps nobody. The read fallback is our own initiative,
+  // so it still needs an active campaign.
   const automation = await prisma.automation.findFirst({
-    where: { id: automationId, isActive: true, ...connectionScope(job.data) },
+    where: { id: automationId, ...(fallback ? { isActive: true } : {}), ...connectionScope(job.data) },
     include: {
       instagramAccount: true,
       workspace: true,
@@ -1835,8 +1839,9 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
   const automations = await prisma.automation.findMany({
     where: {
       ...connectionScope(job.data),
-      ...(continuedId ? { id: continuedId } : { dmTriggerEnabled: true }),
-      isActive: true,
+      // A reply to a paused campaign's first message still gets its answer
+      // (see processPostback); keywords only reach active campaigns.
+      ...(continuedId ? { id: continuedId } : { dmTriggerEnabled: true, isActive: true }),
       instagramAccount: { instagramId: instagramAccountId },
     },
     include: {

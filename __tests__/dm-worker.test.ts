@@ -2840,6 +2840,33 @@ describe("DM Worker — plain-text first message", () => {
     expect(mockSendDirectMessageWithButton.mock.calls[0][3]).toBe("Antes, una pregunta rápida 👇 ¿Tenés un negocio?");
   });
 
+  it("continues a paused campaign's conversation, but keywords only reach active ones", async () => {
+    redis.get.mockResolvedValue("auto_789");
+    mockPrisma.automation.findMany.mockResolvedValue([{ ...campaign, isActive: false }]);
+
+    await getProcessor()(reply("Si"));
+
+    expect(mockPrisma.automation.findMany.mock.calls[0][0].where).not.toHaveProperty("isActive");
+    expect(mockSendDirectMessageWithButton).toHaveBeenCalledTimes(1);
+  });
+
+  it("answers a tap on a paused campaign's button, but not a read fallback", async () => {
+    mockPrisma.automation.findFirst.mockResolvedValue({ ...campaign, isActive: false, trackedLinks: [] });
+
+    await getProcessor()(createMockPostbackJob({
+      instagramAccountId: "ig_456", userId: "commenter_999", payload: "followcheck:auto_789:open",
+    })).catch(() => {});
+    await getProcessor()(createMockPostbackJob({
+      instagramAccountId: "ig_456", userId: "commenter_999", payload: "reveal:auto_789", fallback: true,
+    })).catch(() => {});
+
+    const wheres = mockPrisma.automation.findFirst.mock.calls
+      .map((call) => call[0]?.where)
+      .filter((where) => where?.id === "auto_789");
+    expect(wheres[0]).not.toHaveProperty("isActive");
+    expect(wheres[wheres.length - 1]).toHaveProperty("isActive", true);
+  });
+
   it("continues on a reply with no text (an emoji reaction, a voice note)", async () => {
     redis.get.mockResolvedValue("auto_789");
     mockPrisma.automation.findMany.mockResolvedValue([campaign]);
