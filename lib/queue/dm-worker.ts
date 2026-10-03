@@ -338,6 +338,65 @@ async function clearTextOpening(instagramAccountId: string, userId: string) {
   }
 }
 
+// While the lead question waits for a tap, a written answer counts as one: a
+// "sí" or "tengo…" as the lead button, anything else ("no", "la guía?", "no me
+// llega") as the other one, which goes on to the follow gate and the link.
+// Some people write instead of tapping, or do not see the buttons, and got no
+// answer at all. The marker holds the buttons' payload without its marker
+// (e.g. "followcheck:<campaign>"); a tap or a delivered link clears it.
+const LEAD_QUESTION_TTL_MS = 24 * 3600_000;
+function leadQuestionKey(instagramAccountId: string, userId: string): string {
+  return `lead_question:${instagramAccountId}:${userId}`;
+}
+async function markLeadQuestion(instagramAccountId: string, userId: string, payloadBase: string) {
+  try {
+    await getRedisConnection().set(leadQuestionKey(instagramAccountId, userId), payloadBase, "PX", LEAD_QUESTION_TTL_MS);
+  } catch (error) {
+    console.log("[DM Worker] Could not remember a lead question:", formatError(error));
+  }
+}
+async function clearLeadQuestion(instagramAccountId: string, userId: string) {
+  try {
+    await getRedisConnection().del(leadQuestionKey(instagramAccountId, userId));
+  } catch (error) {
+    console.log("[DM Worker] Could not clear a lead question:", formatError(error));
+  }
+}
+// The first word, without accents: "sí", "Siii", "sip", "sisi", "Tengo una
+// tienda". Not "sin", and not "no tengo".
+export function typedAnswerIsLead(text: string): boolean {
+  const firstWord =
+    text.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().match(/[a-z]+/)?.[0] ?? "";
+  return /^(s+i+)+p?$/.test(firstWord) || firstWord === "tengo";
+}
+async function answerLeadQuestion(data: ProcessMessageJob): Promise<void> {
+  const key = leadQuestionKey(data.instagramAccountId, data.senderId);
+  let payloadBase: string | null;
+  try {
+    const redis = getRedisConnection();
+    payloadBase = await redis.get(key);
+    // Claim it: one answer per question, however many messages follow.
+    if (!payloadBase || (await redis.del(key)) === 0) return;
+  } catch (error) {
+    console.log("[DM Worker] Could not read a lead question:", formatError(error));
+    return;
+  }
+  const marker = typedAnswerIsLead(data.messageText) ? "lead" : "open";
+  await getDMQueue().add(
+    POSTBACK_JOB_NAME,
+    {
+      instagramAccountId: data.instagramAccountId,
+      accountConnectionId: data.accountConnectionId,
+      userId: data.senderId,
+      payload: `${payloadBase}:${marker}`,
+      mid: data.messageId,
+    },
+    {
+      jobId: `typed_answer_${data.instagramAccountId}_${Buffer.from(data.messageId).toString("base64url")}`,
+    },
+  );
+}
+
 // Private-reply pacing (see reservePaceSlot). Off unless
 // PRIVATE_REPLY_INTERVAL_SECONDS is set; read per call so tests can set it.
 function paceIntervalMs(): number {
@@ -1325,6 +1384,9 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
     return;
   }
 
+  // A tap answers the lead question: later messages are just messages.
+  if (!fallback) await clearLeadQuestion(instagramAccountId, userId);
+
   // Duplicate sends are enabled: every button tap re-sends the reveal
   // instead of only firing once per person.
   const dedupeId = `reveal:${userId}`;
@@ -1429,6 +1491,7 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
             ],
           }),
       });
+      await markLeadQuestion(instagramAccountId, userId, `${prefix}:${automation.id}`);
     } catch (error) {
       console.log("[DM Worker] Failed to send the lead question:", formatError(error));
     }
@@ -1596,6 +1659,7 @@ async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
       );
       return;
     }
+    await clearLeadQuestion(instagramAccountId, userId);
     // Optional appreciation follow-up: once the link has been delivered, send a
     // short thank-you. It is scheduled as its own delayed job so it can go out
     // some minutes later (followUpDelayMinutes) rather than immediately. The
@@ -1757,8 +1821,12 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
   const continuedId =
     quickReplyCampaign(job.data.quickReplyPayload) ??
     (await pendingTextOpening(instagramAccountId, senderId));
-  // Keyword triggers read text only; an attachment-only message stops here.
-  if (!messageText && !continuedId) return;
+  // Keyword triggers read text only; an attachment-only message stops here,
+  // unless it answers the lead question.
+  if (!messageText && !continuedId) {
+    await answerLeadQuestion(job.data);
+    return;
+  }
 
   const automations = await prisma.automation.findMany({
     where: {
@@ -1939,6 +2007,7 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
             { title: automation.leadButtonLabel as string, payload: `${prefix}:${automation.id}:lead` },
           ],
         });
+        await markLeadQuestion(instagramAccountId, senderId, `${prefix}:${automation.id}`);
       } else if (sendFollowPrompt) {
         const promptText = renderMessageWithoutLink({
           message:
@@ -2038,6 +2107,10 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
       throw error;
     }
   }
+
+  // No campaign took the message (a keyword still starts its own campaign):
+  // it may be a written answer to the lead question.
+  if (!continuedId) await answerLeadQuestion(job.data);
 }
 
 /**

@@ -168,7 +168,7 @@ vi.mock("bullmq", () => {
   };
 });
 
-import { createDMWorker } from "../lib/queue/dm-worker";
+import { createDMWorker, typedAnswerIsLead } from "../lib/queue/dm-worker";
 import { getRedisConnection } from "@/lib/queue/client";
 import { MetaApiError, sendCommentReply } from "@/lib/meta/client";
 
@@ -2852,6 +2852,83 @@ describe("DM Worker — plain-text first message", () => {
     }));
   });
 
+  it("remembers the lead question it sends, for a written answer", async () => {
+    redis.get.mockResolvedValue("auto_789");
+    mockPrisma.automation.findMany.mockResolvedValue([campaign]);
+
+    await getProcessor()(reply("dale!"));
+
+    expect(redis.set).toHaveBeenCalledWith(
+      "lead_question:ig_456:commenter_999", "followcheck:auto_789", "PX", 24 * 3600_000
+    );
+  });
+
+  describe("a written answer to the lead question", () => {
+    beforeEach(() => {
+      redis.get.mockImplementation(async (key: string) =>
+        key === "lead_question:ig_456:commenter_999" ? "followcheck:auto_789" : null
+      );
+      mockPrisma.automation.findMany.mockResolvedValue([campaign]);
+      mockMatchKeywords.mockReturnValue({ matched: false, matchedKeyword: null });
+    });
+
+    it("counts a sí as the lead button", async () => {
+      await getProcessor()(reply("Sí, tengo una barbería"));
+
+      expect(redis.del).toHaveBeenCalledWith("lead_question:ig_456:commenter_999");
+      expect(mockQueueAdd).toHaveBeenCalledWith(
+        "process-postback",
+        {
+          instagramAccountId: "ig_456",
+          userId: "commenter_999",
+          payload: "followcheck:auto_789:lead",
+          mid: "mid_r1",
+        },
+        { jobId: `typed_answer_ig_456_${Buffer.from("mid_r1").toString("base64url")}` }
+      );
+      expect(mockSendDirectMessageWithButton).not.toHaveBeenCalled();
+    });
+
+    it("counts anything else, even a voice note, as the other button", async () => {
+      await getProcessor()(reply("no"));
+      await getProcessor()(reply("", { attachmentType: "audio" }));
+
+      expect(mockQueueAdd.mock.calls.map((call) => call[1].payload)).toEqual([
+        "followcheck:auto_789:open",
+        "followcheck:auto_789:open",
+      ]);
+    });
+
+    it("answers once, however many messages follow", async () => {
+      redis.del.mockResolvedValue(0);
+
+      await getProcessor()(reply("si"));
+
+      expect(mockQueueAdd).not.toHaveBeenCalled();
+    });
+
+    it("lets a keyword start its own campaign instead", async () => {
+      mockMatchKeywords.mockReturnValue({ matched: true, matchedKeyword: "LINK" });
+
+      await getProcessor()(reply("LINK"));
+
+      expect(mockSendDirectMessageWithButton).toHaveBeenCalledTimes(1);
+      expect(mockQueueAdd).not.toHaveBeenCalledWith("process-postback", expect.anything(), expect.anything());
+    });
+
+    it("is cleared by a tap on one of its buttons", async () => {
+      mockPrisma.automation.findFirst.mockResolvedValue({ ...campaign, trackedLinks: [] });
+
+      await getProcessor()(createMockPostbackJob({
+        instagramAccountId: "ig_456",
+        userId: "commenter_999",
+        payload: "followcheck:auto_789:open",
+      }));
+
+      expect(redis.del).toHaveBeenCalledWith("lead_question:ig_456:commenter_999");
+    });
+  });
+
   it("ignores a reply that is not to a text opening and has no keyword", async () => {
     mockPrisma.automation.findMany.mockResolvedValue([campaign]);
     mockMatchKeywords.mockReturnValue({ matched: false, matchedKeyword: null });
@@ -2860,5 +2937,16 @@ describe("DM Worker — plain-text first message", () => {
 
     expect(mockSendDirectMessageWithButton).not.toHaveBeenCalled();
     expect(mockSendDirectMessage).not.toHaveBeenCalled();
+  });
+});
+
+describe("typedAnswerIsLead", () => {
+  it.each([
+    ["sí", true], ["Si", true], ["siii!", true], ["sip", true], ["sisi", true], ["👍 sí claro", true],
+    ["Tengo una barbería", true], ["si si envíalo por acá", true],
+    ["no", false], ["No tengo", false], ["sin negocio", false], ["la guía?", false],
+    ["no me llega 😞", false], ["", false], ["🙌", false],
+  ])("%s → %s", (text, lead) => {
+    expect(typedAnswerIsLead(text)).toBe(lead);
   });
 });
