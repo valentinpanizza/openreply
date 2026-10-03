@@ -83,6 +83,7 @@ interface WebhookEntry {
       is_deleted?: boolean;
       is_unsupported?: boolean;
       attachments?: Array<{ type?: string }>;
+      quick_reply?: { payload?: string };
     };
   }>;
 }
@@ -94,6 +95,8 @@ export interface WebhookMessageEvent {
   messageText: string;
   senderId: string;
   attachmentType?: string;
+  // Set when the message is a tap on one of our quick replies.
+  quickReplyPayload?: string;
 }
 
 export interface WebhookPostbackEvent {
@@ -223,6 +226,7 @@ export function parseMessageEvents(
 
       const text = message.text?.trim() ?? "";
       const attachmentType = message.attachments?.[0]?.type;
+      const quickReplyPayload = message.quick_reply?.payload;
       const messageId = message.mid;
       const senderId = messaging.sender?.id;
       const accountId = entry.id ?? messaging.recipient?.id;
@@ -239,6 +243,7 @@ export function parseMessageEvents(
         messageText: text,
         senderId,
         ...(attachmentType ? { attachmentType } : {}),
+        ...(quickReplyPayload ? { quickReplyPayload } : {}),
       });
     }
   }

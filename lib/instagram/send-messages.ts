@@ -79,19 +79,24 @@ export async function sendPrivateReply({
   commentId,
   message,
   postId,
+  quickReplies = [],
 }: {
   context: InstagramContext;
   instagramAccountId: string;
   commentId: string;
   message: string;
   postId?: string;
+  quickReplies?: { title: string; payload: string }[];
 }) {
   if (context.provider === "META")
     return meta.sendPrivateReply(
       context.accessToken,
       instagramAccountId,
       commentId,
-      message
+      message,
+      // Only when there are some, so a plain reply sends exactly the call it
+      // always did.
+      ...(quickReplies.length > 0 ? [quickReplies] : [])
     );
   return sendZernioMessage({ context, commentId, postId, text: message });
 }

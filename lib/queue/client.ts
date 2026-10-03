@@ -80,6 +80,8 @@ export interface ProcessMessageJob {
   senderId: string;
   // Set when the message is (or starts with) an attachment, e.g. "audio".
   attachmentType?: string;
+  // Set when the message is a tap on one of our quick replies.
+  quickReplyPayload?: string;
 }
 
 // Tells LEAD_WEBHOOK_URL about a newly captured Lead. A job of its own so a

@@ -378,6 +378,26 @@ describe("parseMessageEvents", () => {
     ]);
   });
 
+  it("keeps the payload of a quick-reply tap", () => {
+    const payload = messagingPayload([
+      {
+        sender: { id: "user_999" },
+        recipient: { id: "ig_456" },
+        message: { mid: "mid_abc", text: "Sí, pasámela", quick_reply: { payload: "opening:auto_1" } },
+      },
+    ]);
+
+    expect(parseMessageEvents(payload)).toEqual([
+      {
+        instagramAccountId: "ig_456",
+        messageId: "mid_abc",
+        messageText: "Sí, pasámela",
+        senderId: "user_999",
+        quickReplyPayload: "opening:auto_1",
+      },
+    ]);
+  });
+
   it("should ignore echoes of the account's own messages", () => {
     const payload = messagingPayload([
       {

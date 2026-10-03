@@ -2749,6 +2749,52 @@ describe("DM Worker — plain-text first message", () => {
     expect(redis.set).toHaveBeenCalledWith("text_opening:ig_456:commenter_999", "auto_789", "PX", 24 * 3600_000);
   });
 
+  it("adds the button label as a quick reply with OPENING_QUICK_REPLY", async () => {
+    vi.stubEnv("OPENING_TEXT_ONLY", "true");
+    vi.stubEnv("OPENING_QUICK_REPLY", "true");
+    mockPrisma.automation.findMany.mockResolvedValue([campaign]);
+
+    await getProcessor()(createMockJob());
+
+    expect(mockSendPrivateReplyWithButton).not.toHaveBeenCalled();
+    expect(mockSendPrivateReply).toHaveBeenCalledTimes(1);
+    expect(mockSendPrivateReply).toHaveBeenCalledWith(
+      "decrypted_token",
+      "ig_456",
+      "comment_555",
+      "¡Buenas commenter_user! Gracias por comentar LINK 🙌 ¿Te paso la guía?",
+      [{ title: "Sí, pasámela", payload: "opening:auto_789" }]
+    );
+    expect(redis.set).toHaveBeenCalledWith("text_opening:ig_456:commenter_999", "auto_789", "PX", 24 * 3600_000);
+  });
+
+  it("sends the text alone when Meta turns the quick replies down as invalid", async () => {
+    vi.stubEnv("OPENING_TEXT_ONLY", "true");
+    vi.stubEnv("OPENING_QUICK_REPLY", "true");
+    mockPrisma.automation.findMany.mockResolvedValue([campaign]);
+    mockSendPrivateReply.mockRejectedValueOnce(new MetaApiError(100, 2018001, undefined, "Invalid parameter"));
+
+    await getProcessor()(createMockJob());
+
+    expect(mockSendPrivateReply).toHaveBeenCalledTimes(2);
+    expect(mockSendPrivateReply.mock.calls[1]).toHaveLength(4);
+    expect(redis.set).toHaveBeenCalledWith("text_opening:ig_456:commenter_999", "auto_789", "PX", 24 * 3600_000);
+  });
+
+  it("does not resend when Instagram refuses the reply itself", async () => {
+    vi.stubEnv("OPENING_TEXT_ONLY", "true");
+    vi.stubEnv("OPENING_QUICK_REPLY", "true");
+    mockPrisma.automation.findMany.mockResolvedValue([campaign]);
+    mockSendPrivateReply.mockRejectedValueOnce(
+      new MetaApiError(100, 2534025, undefined, "El comentario no es válido para una respuesta privada")
+    );
+
+    await getProcessor()(createMockJob()).catch(() => {});
+
+    expect(mockSendPrivateReply).toHaveBeenCalledTimes(1);
+    expect(redis.set).not.toHaveBeenCalled();
+  });
+
   it("keeps the button without OPENING_TEXT_ONLY", async () => {
     mockPrisma.automation.findMany.mockResolvedValue([campaign]);
 
@@ -2780,6 +2826,18 @@ describe("DM Worker — plain-text first message", () => {
     );
     // Once: the next message is an ordinary DM again.
     expect(redis.del).toHaveBeenCalledWith("text_opening:ig_456:commenter_999");
+  });
+
+  it("continues the campaign a quick-reply tap names, with no marker", async () => {
+    mockPrisma.automation.findMany.mockResolvedValue([campaign]);
+
+    await getProcessor()(reply("Sí, pasámela", { quickReplyPayload: "opening:auto_789" }));
+
+    expect(mockPrisma.automation.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ id: "auto_789" }),
+    }));
+    expect(mockMatchKeywords).not.toHaveBeenCalled();
+    expect(mockSendDirectMessageWithButton.mock.calls[0][3]).toBe("Antes, una pregunta rápida 👇 ¿Tenés un negocio?");
   });
 
   it("continues on a reply with no text (an emoji reaction, a voice note)", async () => {

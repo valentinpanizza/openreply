@@ -31,3 +31,27 @@ describe("Meta API errors", () => {
     expect(error).toMatchObject({ name: "MetaApiError", code: 2, subcode: 1545133 });
   });
 });
+
+describe("sendPrivateReply", () => {
+  it("adds quick replies to the text, and nothing when there are none", async () => {
+    const fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ message_id: "m1" }) });
+    vi.stubGlobal("fetch", fetch);
+
+    await sendPrivateReply("token", "ig_1", "comment_1", "hi", [
+      { title: "Sí, pasámela por favor ya mismo", payload: "opening:auto_1" },
+    ]);
+    await sendPrivateReply("token", "ig_1", "comment_1", "hi");
+
+    expect(JSON.parse(fetch.mock.calls[0][1].body)).toEqual({
+      recipient: { comment_id: "comment_1" },
+      message: {
+        text: "hi",
+        quick_replies: [{ content_type: "text", title: "Sí, pasámela por fav", payload: "opening:auto_1" }],
+      },
+    });
+    expect(JSON.parse(fetch.mock.calls[1][1].body)).toEqual({
+      recipient: { comment_id: "comment_1" },
+      message: { text: "hi" },
+    });
+  });
+});

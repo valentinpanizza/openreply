@@ -296,6 +296,21 @@ const DEFAULT_LEAD_QUESTION_NO_LABEL = "No tengo un negocio";
 function openingTextOnly(): boolean {
   return process.env.OPENING_TEXT_ONLY === "true";
 }
+// OPENING_QUICK_REPLY=true adds the campaign's button label to that text
+// opening as a quick reply: a tappable suggestion under a message that is
+// still plain text. With text alone nearly every first message arrived, but a
+// fifth of people answered; with the button template twice as many answered,
+// but only four in ten messages arrived. A tap comes back as an ordinary message, which
+// the text opening already continues; its payload names the campaign, so the
+// tap continues it even when the 24-hour marker is gone or points elsewhere.
+function openingQuickReply(): boolean {
+  return process.env.OPENING_QUICK_REPLY === "true";
+}
+const OPENING_QUICK_REPLY_PREFIX = "opening:";
+function quickReplyCampaign(payload: string | undefined): string | null {
+  if (!payload?.startsWith(OPENING_QUICK_REPLY_PREFIX)) return null;
+  return payload.slice(OPENING_QUICK_REPLY_PREFIX.length) || null;
+}
 const TEXT_OPENING_TTL_MS = 24 * 3600_000;
 function textOpeningKey(instagramAccountId: string, userId: string): string {
   return `text_opening:${instagramAccountId}:${userId}`;
@@ -983,13 +998,35 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
         // so this first message carries the main button alone.
         const askLeadNext = Boolean(automation.leadButtonLabel && leadQuestionMessage());
         if (openingTextOnly()) {
-          await sendPrivateReply({
-            context: accessToken,
-            instagramAccountId: automation.instagramAccount.instagramId,
-            commentId: commentId,
-            message: openingText,
-            postId: mediaId,
-          });
+          const quickReplies = openingQuickReply() && automation.openingDmButtonLabel
+            ? [{ title: automation.openingDmButtonLabel, payload: `${OPENING_QUICK_REPLY_PREFIX}${automation.id}` }]
+            : [];
+          const sendOpening = (withQuickReplies: typeof quickReplies) =>
+            sendPrivateReply({
+              context: accessToken,
+              instagramAccountId: automation.instagramAccount.instagramId,
+              commentId: commentId,
+              message: openingText,
+              postId: mediaId,
+              quickReplies: withQuickReplies,
+            });
+          try {
+            await sendOpening(quickReplies);
+          } catch (error) {
+            // Meta documents private replies as text only. If it turns the
+            // quick replies down as an invalid request (rather than refusing
+            // the reply itself), send the text alone so nobody loses theirs.
+            if (
+              quickReplies.length === 0 ||
+              !(error instanceof MetaApiError) ||
+              error.code !== 100 ||
+              isPrivateReplyRefused(error)
+            ) {
+              throw error;
+            }
+            console.log("[DM Worker] Quick replies refused, sending the opening as text:", formatError(error));
+            await sendOpening([]);
+          }
           await markTextOpening(instagramAccountId, commenterId, automation.id);
         } else {
           await sendPrivateReplyWithButton({
@@ -1714,9 +1751,12 @@ async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
   const { instagramAccountId, messageId, messageText, senderId } = job.data;
 
   await notifyLeadReply(job.data);
-  // A reply to a plain-text first message (see openingTextOnly) continues its
-  // campaign whatever it says; anything else needs a keyword.
-  const continuedId = await pendingTextOpening(instagramAccountId, senderId);
+  // A reply to a plain-text first message (see openingTextOnly), or a tap on
+  // its quick reply, continues its campaign whatever it says; anything else
+  // needs a keyword.
+  const continuedId =
+    quickReplyCampaign(job.data.quickReplyPayload) ??
+    (await pendingTextOpening(instagramAccountId, senderId));
   // Keyword triggers read text only; an attachment-only message stops here.
   if (!messageText && !continuedId) return;
 
