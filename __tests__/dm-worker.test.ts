@@ -2746,7 +2746,7 @@ describe("DM Worker — plain-text first message", () => {
       "comment_555",
       "¡Buenas commenter_user! Gracias por comentar LINK 🙌 ¿Te paso la guía?"
     );
-    expect(redis.set).toHaveBeenCalledWith("text_opening:ig_456:commenter_999", "auto_789", "PX", 24 * 3600_000);
+    expect(redis.set).toHaveBeenCalledWith("text_opening:ig_456:commenter_999", "auto_789", "PX", 7 * 24 * 3600_000);
   });
 
   it("adds the button label as a quick reply with OPENING_QUICK_REPLY", async () => {
@@ -2765,7 +2765,7 @@ describe("DM Worker — plain-text first message", () => {
       "¡Buenas commenter_user! Gracias por comentar LINK 🙌 ¿Te paso la guía?",
       [{ title: "Sí, pasámela", payload: "opening:auto_789" }]
     );
-    expect(redis.set).toHaveBeenCalledWith("text_opening:ig_456:commenter_999", "auto_789", "PX", 24 * 3600_000);
+    expect(redis.set).toHaveBeenCalledWith("text_opening:ig_456:commenter_999", "auto_789", "PX", 7 * 24 * 3600_000);
   });
 
   it("sends the text alone when Meta turns the quick replies down as invalid", async () => {
@@ -2778,7 +2778,7 @@ describe("DM Worker — plain-text first message", () => {
 
     expect(mockSendPrivateReply).toHaveBeenCalledTimes(2);
     expect(mockSendPrivateReply.mock.calls[1]).toHaveLength(4);
-    expect(redis.set).toHaveBeenCalledWith("text_opening:ig_456:commenter_999", "auto_789", "PX", 24 * 3600_000);
+    expect(redis.set).toHaveBeenCalledWith("text_opening:ig_456:commenter_999", "auto_789", "PX", 7 * 24 * 3600_000);
   });
 
   it("does not resend when Instagram refuses the reply itself", async () => {
