@@ -2,6 +2,7 @@ import { createDMWorker } from "@/lib/queue/dm-worker";
 import { recordWorkerHeartbeat } from "@/lib/ops/worker-health";
 import { reconcileComments } from "@/lib/polling/comment-reconciler";
 import { attachPendingNextReels } from "@/lib/automation/attach-next-reel";
+import { runTrialPublisher } from "@/lib/trials/publisher";
 import os from "node:os";
 
 const worker = createDMWorker();
@@ -48,10 +49,34 @@ async function poll() {
 setTimeout(() => void poll(), 10_000);
 const pollTimer = setInterval(() => void poll(), POLL_INTERVAL_MS);
 
+// Trial reels from the OpenCloud queue (TRIAL_PUBLISH_ENABLED). A timer of its
+// own: an upload can take minutes and must not hold up comment reconciliation.
+const TRIAL_TICK_MS = 2 * 60_000;
+let trialRunning = false;
+
+async function trialTick() {
+  if (trialRunning) return;
+  trialRunning = true;
+  try {
+    const result = await runTrialPublisher();
+    if (result.status !== "disabled" && result.status !== "waiting") {
+      console.log("[DM Worker] Trial publisher:", result);
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    console.error("[DM Worker] Trial publisher failed:", message);
+  } finally {
+    trialRunning = false;
+  }
+}
+
+const trialTimer = setInterval(() => void trialTick(), TRIAL_TICK_MS);
+
 async function shutdown(signal: string) {
   console.log(`[DM Worker] ${signal} received, closing worker`);
   clearInterval(heartbeatTimer);
   clearInterval(pollTimer);
+  clearInterval(trialTimer);
   await worker.close();
   process.exit(0);
 }

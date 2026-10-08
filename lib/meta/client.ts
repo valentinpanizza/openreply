@@ -896,3 +896,117 @@ export async function debugToken(inputToken: string, accessToken: string) {
   const response = await fetch(url.toString());
   return handleResponse(response);
 }
+
+// ─── Reel publishing ────────────────────────────────────────────────────────────
+// All of these need the instagram_business_content_publish permission.
+
+// MANUAL keeps a trial reel with non-followers until it is shared from the app;
+// SS_PERFORMANCE lets Instagram share it with followers when it does well.
+export type TrialGraduationStrategy = "MANUAL" | "SS_PERFORMANCE";
+
+/**
+ * Create an empty reel container for a resumable upload: the video bytes go to
+ * `uri` with uploadReelVideo, so the file never has to be on a public URL.
+ * With `trial` set the reel is published as a trial reel.
+ */
+export async function createReelUploadContainer(
+  accessToken: string,
+  instagramAccountId: string,
+  options: { caption: string; thumbOffsetMs?: number; trial?: TrialGraduationStrategy }
+): Promise<{ id: string; uri: string }> {
+  const response = await fetch(`${instagramGraphBase()}/${instagramAccountId}/media`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify({
+      media_type: "REELS",
+      upload_type: "resumable",
+      caption: options.caption,
+      ...(options.thumbOffsetMs !== undefined ? { thumb_offset: options.thumbOffsetMs } : {}),
+      ...(options.trial ? { trial_params: { graduation_strategy: options.trial } } : {}),
+    }),
+  });
+
+  return handleResponse(response);
+}
+
+/** Send the whole video to a container made by createReelUploadContainer. */
+export async function uploadReelVideo(
+  accessToken: string,
+  uploadUri: string,
+  video: ArrayBuffer
+): Promise<void> {
+  const response = await fetch(uploadUri, {
+    method: "POST",
+    headers: {
+      Authorization: `OAuth ${accessToken}`,
+      offset: "0",
+      file_size: String(video.byteLength),
+    },
+    body: video,
+  });
+  // rupload answers {"success":true,...} or {"debug_info":{...}}, not the Graph
+  // error shape, so it gets its own check.
+  const data = (await response.json().catch(() => ({}))) as { success?: boolean };
+  if (!response.ok || data.success !== true) {
+    throw new MetaApiError(
+      response.status,
+      undefined,
+      undefined,
+      `Reel upload failed (HTTP ${response.status}): ${JSON.stringify(data).slice(0, 300)}`
+    );
+  }
+}
+
+/**
+ * Processing state of a media container: IN_PROGRESS, FINISHED (ready to
+ * publish), PUBLISHED, ERROR or EXPIRED. `status` explains an ERROR.
+ */
+export async function getMediaContainerStatus(
+  accessToken: string,
+  containerId: string
+): Promise<{ status_code?: string; status?: string }> {
+  const url = new URL(`${instagramGraphBase()}/${containerId}`);
+  url.searchParams.set("fields", "status_code,status");
+  url.searchParams.set("access_token", accessToken);
+
+  const response = await fetch(url.toString());
+  return handleResponse(response);
+}
+
+/** Publish a FINISHED container. Returns the new media id. */
+export async function publishMediaContainer(
+  accessToken: string,
+  instagramAccountId: string,
+  containerId: string
+): Promise<string> {
+  const response = await fetch(
+    `${instagramGraphBase()}/${instagramAccountId}/media_publish`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({ creation_id: containerId }),
+    }
+  );
+
+  const data = await handleResponse<{ id: string }>(response);
+  return data.id;
+}
+
+export async function getMediaPermalink(
+  accessToken: string,
+  mediaId: string
+): Promise<string | null> {
+  const url = new URL(`${instagramGraphBase()}/${mediaId}`);
+  url.searchParams.set("fields", "permalink");
+  url.searchParams.set("access_token", accessToken);
+
+  const response = await fetch(url.toString());
+  const data = await handleResponse<{ permalink?: string }>(response);
+  return data.permalink ?? null;
+}
