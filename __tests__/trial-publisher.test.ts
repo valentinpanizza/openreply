@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { mockPrisma, mockMeta, mockDuplicate, mockSpeed, redis, cloud } = vi.hoisted(() => {
+const { mockPrisma, mockMeta, mockDuplicate, mockSpeed, mockStage, mockUnstage, redis, cloud } = vi.hoisted(() => {
   const kv = new Map<string, string>();
   const hashes = new Map<string, Map<string, string>>();
   return {
@@ -9,14 +9,15 @@ const { mockPrisma, mockMeta, mockDuplicate, mockSpeed, redis, cloud } = vi.hois
       instagramAccount: { findFirst: vi.fn() },
     },
     mockMeta: {
-      createReelUploadContainer: vi.fn(),
-      uploadReelVideo: vi.fn(),
+      createReelContainer: vi.fn(),
       getMediaContainerStatus: vi.fn(),
       publishMediaContainer: vi.fn(),
       getMediaPermalink: vi.fn(),
     },
     mockDuplicate: vi.fn(),
     mockSpeed: vi.fn(),
+    mockStage: vi.fn(),
+    mockUnstage: vi.fn(),
     redis: {
       kv,
       hashes,
@@ -51,6 +52,7 @@ vi.mock("@/lib/trials/speed", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/trials/speed")>()),
   changeSpeed: mockSpeed,
 }));
+vi.mock("@/lib/trials/staging", () => ({ stageVideo: mockStage }));
 vi.mock("@/lib/queue/client", () => ({ getRedisConnection: () => redis }));
 vi.mock("@/lib/meta/client", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/meta/client")>()),
@@ -118,11 +120,12 @@ beforeEach(() => {
   cloud.download.mockResolvedValue(VIDEO);
   cloud.rename.mockImplementation(async (path: string, name: string) => `${path.split("/").slice(0, -1).join("/")}/${name}`);
   mockSpeed.mockReset();
+  mockUnstage.mockReset().mockResolvedValue(undefined);
+  mockStage.mockReset().mockResolvedValue({ url: "https://files.example/v.mp4", remove: mockUnstage });
   delete process.env.TRIAL_SKIP_FOLDERS;
   cloud.moveInto.mockImplementation(async (path: string, dir: string) => `${dir}/${path.split("/").pop()}`);
 
-  mockMeta.createReelUploadContainer.mockResolvedValue({ id: "c1", uri: "https://rupload.example/c1" });
-  mockMeta.uploadReelVideo.mockResolvedValue(undefined);
+  mockMeta.createReelContainer.mockResolvedValue({ id: "c1" });
   mockMeta.getMediaContainerStatus
     .mockReset()
     .mockResolvedValueOnce({ status_code: "IN_PROGRESS" })
@@ -193,12 +196,14 @@ describe("runTrialPublisher", () => {
       permalink: "https://www.instagram.com/reel/abc/",
     });
     expect(cloud.download).toHaveBeenCalledWith(`${DIR}/normal_2.mp4`);
-    expect(mockMeta.createReelUploadContainer).toHaveBeenCalledWith("token", "ig1", {
+    expect(mockStage).toHaveBeenCalledWith(VIDEO);
+    expect(mockUnstage).toHaveBeenCalled();
+    expect(mockMeta.createReelContainer).toHaveBeenCalledWith("token", "ig1", {
+      videoUrl: "https://files.example/v.mp4",
       caption: "Comentá COSTO y te lo paso",
       thumbOffsetMs: 1000,
       trial: "MANUAL",
     });
-    expect(mockMeta.uploadReelVideo).toHaveBeenCalledWith("token", "https://rupload.example/c1", VIDEO);
     expect(mockMeta.publishMediaContainer).toHaveBeenCalledWith("token", "ig1", "c1");
     expect(mockDuplicate).toHaveBeenCalledWith({ automationId: "base", workspaceId: "ws1" });
     expect(mockPrisma.automation.update).toHaveBeenCalledWith({
@@ -221,7 +226,7 @@ describe("runTrialPublisher", () => {
   it("lets Instagram graduate the trial when configured", async () => {
     process.env.TRIAL_GRADUATION = "SS_PERFORMANCE";
     await runTrialPublisher({ now: NOW, sleep, force: true });
-    expect(mockMeta.createReelUploadContainer.mock.calls[0][2].trial).toBe("SS_PERFORMANCE");
+    expect(mockMeta.createReelContainer.mock.calls[0][2].trial).toBe("SS_PERFORMANCE");
   });
 
   it("keeps a gap after the last post even when the next slot is due", async () => {
@@ -278,7 +283,7 @@ describe("runTrialPublisher", () => {
     const result = await runTrialPublisher({ now: NOW, sleep });
 
     expect(result).toMatchObject({ status: "published", campaign: "[TRIAL4] Costo" });
-    expect(mockMeta.createReelUploadContainer).not.toHaveBeenCalled();
+    expect(mockMeta.createReelContainer).not.toHaveBeenCalled();
     expect(mockMeta.publishMediaContainer).not.toHaveBeenCalled();
     expect(cloud.rename).toHaveBeenCalledWith(`${DIR}/normal_2.mp4`, "Znormal_2.mp4");
     expect(slots()[0].done).toBe(true);
@@ -314,7 +319,7 @@ describe("runTrialPublisher", () => {
   it("skips a folder whose campaign is paused", async () => {
     mockPrisma.automation.findFirst.mockResolvedValue({ id: "base", name: "Costo", isActive: false });
     expect(await runTrialPublisher({ now: NOW, sleep, force: true })).toEqual({ status: "empty" });
-    expect(mockMeta.createReelUploadContainer).not.toHaveBeenCalled();
+    expect(mockMeta.createReelContainer).not.toHaveBeenCalled();
   });
 
   it("shows what would go out on a dry run", async () => {
@@ -326,7 +331,7 @@ describe("runTrialPublisher", () => {
       trialName: "[TRIAL4] Costo",
     });
     expect(cloud.download).not.toHaveBeenCalled();
-    expect(mockMeta.createReelUploadContainer).not.toHaveBeenCalled();
+    expect(mockMeta.createReelContainer).not.toHaveBeenCalled();
   });
 });
 
@@ -370,7 +375,7 @@ describe("the owner's TRIAL layout", () => {
     expect(result).toMatchObject({ status: "published", file: `${FOLDER}/normal_02.mp4`, campaign: "[TRIAL6] Jarvis" });
     expect(mockPrisma.automation.findFirst.mock.calls[0][0].where.name.equals).toBe("Jarvis2");
     expect(mockSpeed).toHaveBeenCalledWith(VIDEO, 1.2);
-    expect(mockMeta.uploadReelVideo).toHaveBeenCalledWith("token", "https://rupload.example/c1", sped);
+    expect(mockStage).toHaveBeenCalledWith(sped);
     expect(cloud.rename).toHaveBeenCalledWith(`${FOLDER}/normal_02.mp4`, "Znormal_02.mp4");
     expect(cloud.rename).not.toHaveBeenCalledWith(FOLDER, expect.anything());
   });
@@ -403,7 +408,7 @@ describe("the owner's TRIAL layout", () => {
     layout([dir("[TRIAL] JARVIS")], { [FOLDER]: [vid("normal_02.mp4")] });
     cloud.readText.mockImplementation(async (path: string) => (path.endsWith("texto.txt") ? "x" : '{"velocidad": 9}'));
     expect(await runTrialPublisher({ now: NOW, sleep, force: true })).toEqual({ status: "empty" });
-    expect(mockMeta.createReelUploadContainer).not.toHaveBeenCalled();
+    expect(mockMeta.createReelContainer).not.toHaveBeenCalled();
   });
 });
 

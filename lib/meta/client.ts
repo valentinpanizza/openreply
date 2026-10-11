@@ -905,15 +905,16 @@ export async function debugToken(inputToken: string, accessToken: string) {
 export type TrialGraduationStrategy = "MANUAL" | "SS_PERFORMANCE";
 
 /**
- * Create an empty reel container for a resumable upload: the video bytes go to
- * `uri` with uploadReelVideo, so the file never has to be on a public URL.
+ * Create a reel container that Instagram fills by downloading `videoUrl`, which
+ * must be publicly reachable until the container is FINISHED. (The resumable
+ * upload is not available with Instagram Login: Meta asks for video_url.)
  * With `trial` set the reel is published as a trial reel.
  */
-export async function createReelUploadContainer(
+export async function createReelContainer(
   accessToken: string,
   instagramAccountId: string,
-  options: { caption: string; thumbOffsetMs?: number; trial?: TrialGraduationStrategy }
-): Promise<{ id: string; uri: string }> {
+  options: { videoUrl: string; caption: string; thumbOffsetMs?: number; trial?: TrialGraduationStrategy }
+): Promise<{ id: string }> {
   const response = await fetch(`${instagramGraphBase()}/${instagramAccountId}/media`, {
     method: "POST",
     headers: {
@@ -922,7 +923,7 @@ export async function createReelUploadContainer(
     },
     body: JSON.stringify({
       media_type: "REELS",
-      upload_type: "resumable",
+      video_url: options.videoUrl,
       caption: options.caption,
       ...(options.thumbOffsetMs !== undefined ? { thumb_offset: options.thumbOffsetMs } : {}),
       ...(options.trial ? { trial_params: { graduation_strategy: options.trial } } : {}),
@@ -930,34 +931,6 @@ export async function createReelUploadContainer(
   });
 
   return handleResponse(response);
-}
-
-/** Send the whole video to a container made by createReelUploadContainer. */
-export async function uploadReelVideo(
-  accessToken: string,
-  uploadUri: string,
-  video: ArrayBuffer
-): Promise<void> {
-  const response = await fetch(uploadUri, {
-    method: "POST",
-    headers: {
-      Authorization: `OAuth ${accessToken}`,
-      offset: "0",
-      file_size: String(video.byteLength),
-    },
-    body: video,
-  });
-  // rupload answers {"success":true,...} or {"debug_info":{...}}, not the Graph
-  // error shape, so it gets its own check.
-  const data = (await response.json().catch(() => ({}))) as { success?: boolean };
-  if (!response.ok || data.success !== true) {
-    throw new MetaApiError(
-      response.status,
-      undefined,
-      undefined,
-      `Reel upload failed (HTTP ${response.status}): ${JSON.stringify(data).slice(0, 300)}`
-    );
-  }
 }
 
 /**

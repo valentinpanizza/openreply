@@ -37,15 +37,15 @@ import { duplicateCampaign } from "@/lib/campaigns/duplicate";
 import { getRedisConnection } from "@/lib/queue/client";
 import {
   MetaApiError,
-  createReelUploadContainer,
+  createReelContainer,
   getMediaContainerStatus,
   getMediaPermalink,
   publishMediaContainer,
-  uploadReelVideo,
   type TrialGraduationStrategy,
 } from "@/lib/meta/client";
 import { OpenCloudClient, type DavEntry } from "./opencloud";
 import { changeSpeed, parseSpeed } from "./speed";
+import { stageVideo, type StagedVideo } from "./staging";
 
 const CAPTION_FILE = "texto.txt";
 const SETTINGS_FILE = "trial.json";
@@ -563,23 +563,26 @@ async function publishCandidate(
   const save = () => redis.set(INFLIGHT_KEY, JSON.stringify(state), "EX", 7 * 86400);
   await save();
 
-  // Nothing is public until media_publish: any failure up to it is safe.
+  // Nothing is public on Instagram until media_publish: any failure up to it
+  // is safe. The copy in the staging bucket is always removed.
+  let staged: StagedVideo | null = null;
   try {
     let video = await cloud.download(candidate.video.path);
     if (candidate.speed && candidate.speed !== 1) {
       video = await changeSpeed(video, candidate.speed);
-      if (video.byteLength > MAX_VIDEO_BYTES) {
-        throw new Error(`el video acelerado pesa ${Math.round(video.byteLength / 1024 / 1024)} MB; Instagram acepta hasta 300 MB`);
-      }
     }
-    const container = await createReelUploadContainer(accessToken, account.instagramId, {
+    if (video.byteLength > MAX_VIDEO_BYTES) {
+      throw new Error(`el video pesa ${Math.round(video.byteLength / 1024 / 1024)} MB; Instagram acepta hasta 300 MB`);
+    }
+    staged = await stageVideo(video);
+    const container = await createReelContainer(accessToken, account.instagramId, {
+      videoUrl: staged.url,
       caption: candidate.caption,
       thumbOffsetMs: config.thumbOffsetMs,
       trial: config.graduation,
     });
     state.containerId = container.id;
     await save();
-    await uploadReelVideo(accessToken, container.uri, video);
     await waitForContainer(accessToken, container.id, sleep);
   } catch (error) {
     await redis.del(INFLIGHT_KEY);
@@ -594,6 +597,8 @@ async function publishCandidate(
       tags: ["warning"],
     });
     return { status: "failed", file: candidate.video.path, error: errorMessage(error) };
+  } finally {
+    await staged?.remove();
   }
 
   let mediaId: string;
