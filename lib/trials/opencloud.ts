@@ -122,6 +122,18 @@ export class OpenCloudClient {
     return response.text();
   }
 
+  /** Rename a file or folder in place. Never overwrites; returns the new path. */
+  async rename(path: string, newName: string): Promise<string> {
+    const parent = trimSlashes(path).split("/").slice(0, -1).join("/");
+    const target = parent ? `${parent}/${newName}` : newName;
+    const response = await this.request(await this.url(path), {
+      method: "MOVE",
+      headers: { Destination: await this.url(target), Overwrite: "F" },
+    });
+    if (!response.ok) throw new Error(`OpenCloud: no pude renombrar ${path} (HTTP ${response.status})`);
+    return target;
+  }
+
   /** Move a file into `targetDir`, creating it if needed. Never overwrites. */
   async moveInto(path: string, targetDir: string): Promise<string> {
     const created = await this.request(`${await this.url(targetDir)}/`, { method: "MKCOL" });

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { mockPrisma, mockMeta, mockDuplicate, redis, cloud } = vi.hoisted(() => {
+const { mockPrisma, mockMeta, mockDuplicate, mockSpeed, redis, cloud } = vi.hoisted(() => {
   const kv = new Map<string, string>();
   const hashes = new Map<string, Map<string, string>>();
   return {
@@ -16,6 +16,7 @@ const { mockPrisma, mockMeta, mockDuplicate, redis, cloud } = vi.hoisted(() => {
       getMediaPermalink: vi.fn(),
     },
     mockDuplicate: vi.fn(),
+    mockSpeed: vi.fn(),
     redis: {
       kv,
       hashes,
@@ -38,6 +39,7 @@ const { mockPrisma, mockMeta, mockDuplicate, redis, cloud } = vi.hoisted(() => {
       readText: vi.fn(),
       download: vi.fn(),
       moveInto: vi.fn(),
+      rename: vi.fn(),
     },
   };
 });
@@ -45,6 +47,10 @@ const { mockPrisma, mockMeta, mockDuplicate, redis, cloud } = vi.hoisted(() => {
 vi.mock("@/lib/db/client", () => ({ prisma: mockPrisma }));
 vi.mock("@/lib/meta/oauth", () => ({ decryptToken: () => "token" }));
 vi.mock("@/lib/campaigns/duplicate", () => ({ duplicateCampaign: mockDuplicate }));
+vi.mock("@/lib/trials/speed", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/trials/speed")>()),
+  changeSpeed: mockSpeed,
+}));
 vi.mock("@/lib/queue/client", () => ({ getRedisConnection: () => redis }));
 vi.mock("@/lib/meta/client", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/meta/client")>()),
@@ -55,8 +61,9 @@ vi.mock("@/lib/trials/opencloud", async (importOriginal) => ({
   OpenCloudClient: { fromEnv: () => cloud },
 }));
 
-import { nextTrialNumber, planDaySlots, runTrialPublisher } from "../lib/trials/publisher";
+import { nextTrialNumber, parseFolderName, planDaySlots, runTrialPublisher } from "../lib/trials/publisher";
 import { parsePropfind } from "../lib/trials/opencloud";
+import { parseSpeed, speedArgs } from "../lib/trials/speed";
 import { MetaApiError } from "../lib/meta/client";
 
 const DIR = "Reels/Trial/Costo";
@@ -105,8 +112,13 @@ beforeEach(() => {
       ? [folder("Costo")]
       : [file("texto.txt", 20), file("normal_10.mp4"), file("normal_2.mp4"), { ...folder("publicados"), path: `${DIR}/publicados` }]
   );
-  cloud.readText.mockResolvedValue("Comentá COSTO y te lo paso\n");
+  cloud.readText.mockImplementation(async (path: string) =>
+    path.endsWith("trial.json") ? null : "Comentá COSTO y te lo paso\n"
+  );
   cloud.download.mockResolvedValue(VIDEO);
+  cloud.rename.mockImplementation(async (path: string, name: string) => `${path.split("/").slice(0, -1).join("/")}/${name}`);
+  mockSpeed.mockReset();
+  delete process.env.TRIAL_SKIP_FOLDERS;
   cloud.moveInto.mockImplementation(async (path: string, dir: string) => `${dir}/${path.split("/").pop()}`);
 
   mockMeta.createReelUploadContainer.mockResolvedValue({ id: "c1", uri: "https://rupload.example/c1" });
@@ -200,7 +212,7 @@ describe("runTrialPublisher", () => {
         matchAnyPost: false,
       },
     });
-    expect(cloud.moveInto).toHaveBeenCalledWith(`${DIR}/normal_2.mp4`, `${DIR}/publicados`);
+    expect(cloud.rename).toHaveBeenCalledWith(`${DIR}/normal_2.mp4`, "Znormal_2.mp4");
     expect(redis.kv.has("trial:inflight")).toBe(false);
     expect(redis.kv.has("trial:lock")).toBe(false);
     expect(slots().map((slot: { done: boolean }) => slot.done)).toEqual([true, false]);
@@ -239,6 +251,7 @@ describe("runTrialPublisher", () => {
 
     expect(result.status).toBe("failed");
     expect(cloud.moveInto).not.toHaveBeenCalled();
+    expect(cloud.rename).not.toHaveBeenCalled();
     expect(mockDuplicate).not.toHaveBeenCalled();
     expect(redis.kv.has("trial:inflight")).toBe(false);
   });
@@ -267,7 +280,7 @@ describe("runTrialPublisher", () => {
     expect(result).toMatchObject({ status: "published", campaign: "[TRIAL4] Costo" });
     expect(mockMeta.createReelUploadContainer).not.toHaveBeenCalled();
     expect(mockMeta.publishMediaContainer).not.toHaveBeenCalled();
-    expect(cloud.moveInto).toHaveBeenCalledWith(`${DIR}/normal_2.mp4`, `${DIR}/publicados`);
+    expect(cloud.rename).toHaveBeenCalledWith(`${DIR}/normal_2.mp4`, "Znormal_2.mp4");
     expect(slots()[0].done).toBe(true);
   });
 
@@ -292,7 +305,7 @@ describe("runTrialPublisher", () => {
     expect(mockMeta.publishMediaContainer).not.toHaveBeenCalled();
   });
 
-  it("never republishes a file whose move to publicados failed", async () => {
+  it("never republishes a file whose rename failed", async () => {
     redis.hashes.set("trial:published", new Map([[`${DIR}/normal_2.mp4|1000`, "m0"]]));
     await runTrialPublisher({ now: NOW, sleep, force: true });
     expect(cloud.download).toHaveBeenCalledWith(`${DIR}/normal_10.mp4`);
@@ -314,6 +327,98 @@ describe("runTrialPublisher", () => {
     });
     expect(cloud.download).not.toHaveBeenCalled();
     expect(mockMeta.createReelUploadContainer).not.toHaveBeenCalled();
+  });
+});
+
+describe("the owner's TRIAL layout", () => {
+  const ROOT = "TRIAL";
+  const FOLDER = `${ROOT}/[TRIAL] JARVIS`;
+  const vid = (name: string, dir = FOLDER) => ({ name, path: `${dir}/${name}`, isDir: false, size: 1000 });
+  const dir = (name: string) => ({ name, path: `${ROOT}/${name}`, isDir: true, size: 0 });
+
+  function layout(folders: ReturnType<typeof dir>[], files: Record<string, ReturnType<typeof vid>[]>) {
+    process.env.TRIAL_FOLDER = "TRIAL";
+    cloud.list.mockImplementation(async (path: string) => (path === ROOT ? folders : files[path] ?? []));
+  }
+
+  it("reads folder names", () => {
+    expect(parseFolderName("Z[TRIAL] Sesión")).toEqual({ done: true, label: "Sesión" });
+    expect(parseFolderName("[TRAIL] CLIENTE")).toEqual({ done: false, label: "CLIENTE" });
+    expect(parseFolderName("Costo")).toEqual({ done: false, label: "Costo" });
+    expect(parseFolderName("Zorro")).toEqual({ done: false, label: "Zorro" });
+  });
+
+  it("skips done folders and videos, speeds up, and uses the campaign and name from trial.json", async () => {
+    layout(
+      [dir("Z[TRIAL] Costo"), dir("[TRIAL] JARVIS")],
+      { [FOLDER]: [vid("Znormal_01.mp4"), vid("normal_02.mp4"), vid("normal_03.mp4")] }
+    );
+    cloud.readText.mockImplementation(async (path: string) =>
+      path.endsWith("texto.txt")
+        ? 'Comentá "JARVIS" y te mando la guía'
+        : '{"campana": "Jarvis2", "nombre": "Jarvis", "velocidad": "1,2x"}'
+    );
+    mockPrisma.automation.findFirst.mockImplementation(async ({ where }) =>
+      where.postId ? null : { id: "j2", name: where.name.equals, isActive: true }
+    );
+    mockPrisma.automation.findMany.mockResolvedValue([{ name: "[TRIAL4] Jarvis" }, { name: "[TRIAL5] Jarvis" }]);
+    const sped = new TextEncoder().encode("rapido").buffer;
+    mockSpeed.mockResolvedValue(sped);
+
+    const result = await runTrialPublisher({ now: NOW, sleep, force: true });
+
+    expect(result).toMatchObject({ status: "published", file: `${FOLDER}/normal_02.mp4`, campaign: "[TRIAL6] Jarvis" });
+    expect(mockPrisma.automation.findFirst.mock.calls[0][0].where.name.equals).toBe("Jarvis2");
+    expect(mockSpeed).toHaveBeenCalledWith(VIDEO, 1.2);
+    expect(mockMeta.uploadReelVideo).toHaveBeenCalledWith("token", "https://rupload.example/c1", sped);
+    expect(cloud.rename).toHaveBeenCalledWith(`${FOLDER}/normal_02.mp4`, "Znormal_02.mp4");
+    expect(cloud.rename).not.toHaveBeenCalledWith(FOLDER, expect.anything());
+  });
+
+  it("marks the folder with a Z when the last video goes out", async () => {
+    layout([dir("[TRIAL] JARVIS")], { [FOLDER]: [vid("Znormal_01.mp4"), vid("normal_02.mp4")] });
+    cloud.readText.mockImplementation(async (path: string) => (path.endsWith("texto.txt") ? "x" : null));
+    // After the rename the folder has nothing left to publish.
+    cloud.rename.mockImplementation(async (path: string, name: string) => {
+      if (name === "Znormal_02.mp4") cloud.list.mockImplementation(async (p: string) => (p === ROOT ? [] : [vid("Znormal_01.mp4"), vid(name)]));
+      return `${path}/../${name}`;
+    });
+    mockPrisma.automation.findFirst.mockImplementation(async ({ where }) =>
+      where.postId ? null : { id: "j", name: "JARVIS", isActive: true }
+    );
+
+    await runTrialPublisher({ now: NOW, sleep, force: true });
+
+    expect(cloud.rename).toHaveBeenCalledWith(FOLDER, "Z[TRIAL] JARVIS");
+  });
+
+  it("leaves out the folders in TRIAL_SKIP_FOLDERS", async () => {
+    process.env.TRIAL_SKIP_FOLDERS = "grokbot";
+    layout([dir("[TRIAL] GrokBot")], { [`${ROOT}/[TRIAL] GrokBot`]: [vid("grok_03.mp4", `${ROOT}/[TRIAL] GrokBot`)] });
+    expect(await runTrialPublisher({ now: NOW, sleep, force: true })).toEqual({ status: "empty" });
+    expect(cloud.download).not.toHaveBeenCalled();
+  });
+
+  it("skips a folder with a broken trial.json and publishes nothing", async () => {
+    layout([dir("[TRIAL] JARVIS")], { [FOLDER]: [vid("normal_02.mp4")] });
+    cloud.readText.mockImplementation(async (path: string) => (path.endsWith("texto.txt") ? "x" : '{"velocidad": 9}'));
+    expect(await runTrialPublisher({ now: NOW, sleep, force: true })).toEqual({ status: "empty" });
+    expect(mockMeta.createReelUploadContainer).not.toHaveBeenCalled();
+  });
+});
+
+describe("speed", () => {
+  it("reads factors the way the owner writes them", () => {
+    expect(parseSpeed("1,2x")).toBe(1.2);
+    expect(parseSpeed(1.3)).toBe(1.3);
+    expect(parseSpeed("rápido")).toBeNull();
+    expect(parseSpeed(3)).toBeNull();
+  });
+
+  it("speeds picture and sound by the same factor", () => {
+    const args = speedArgs("in.mp4", "out.mp4", 1.2);
+    expect(args).toContain("setpts=PTS/1.2");
+    expect(args).toContain("atempo=1.2");
   });
 });
 

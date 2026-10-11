@@ -2,16 +2,23 @@
  * Publishes trial reels from a queue folder in the owner's OpenCloud, a few a
  * day, at random times inside a daily window.
  *
- * Layout (TRIAL_FOLDER, default "Reels/Trial"): one subfolder per campaign,
- * named exactly like the OpenReply campaign the trials reuse, holding the
- * variants (.mp4 / .mov) and texto.txt with the caption:
+ * Layout (TRIAL_FOLDER, default "Reels/Trial"): one subfolder per reel, holding
+ * the variants (.mp4 / .mov), texto.txt with the caption and, optionally,
+ * trial.json:
  *
- *   Reels/Trial/Costo/texto.txt
- *   Reels/Trial/Costo/normal_01.mp4
+ *   TRIAL/[TRIAL] JARVIS/texto.txt
+ *   TRIAL/[TRIAL] JARVIS/trial.json   {"campana": "Jarvis2", "nombre": "Jarvis", "velocidad": 1.2}
+ *   TRIAL/[TRIAL] JARVIS/normal_01.mp4
  *
- * Each published variant gets its own campaign, a copy of "Costo" named
- * "[TRIALn] Costo", active and bound to the new reel: what the owner did by
- * hand for every trial. The file then moves to "publicados/". A video Instagram
+ * The folder name (minus "[TRIAL]" / "[TRAIL]") is the OpenReply campaign the
+ * trials reuse unless trial.json says "campana"; "nombre" is the name used in
+ * "[TRIALn] <nombre>"; "velocidad" speeds the video up before it goes out.
+ *
+ * Each published variant gets its own campaign, a copy of that one named
+ * "[TRIALn] <nombre>", active and bound to the new reel: what the owner did by
+ * hand for every trial. The owner marks what he already uploaded with a "Z" in
+ * front of the name, so the file is renamed "Zname.mp4" and, when no variant is
+ * left, the folder "Z[TRIAL] name". Names starting with "Z" are skipped. A video Instagram
  * cannot process moves to "error/"; any other failure leaves it for the next
  * slot. Nothing is ever published twice: a run that dies after publishing is
  * finished by the next one, and one that died mid-publish parks its file in
@@ -38,9 +45,11 @@ import {
   type TrialGraduationStrategy,
 } from "@/lib/meta/client";
 import { OpenCloudClient, type DavEntry } from "./opencloud";
+import { changeSpeed, parseSpeed } from "./speed";
 
 const CAPTION_FILE = "texto.txt";
-const PUBLISHED_DIR = "publicados";
+const SETTINGS_FILE = "trial.json";
+const DONE_PREFIX = "Z";
 const ERROR_DIR = "error";
 const REVIEW_DIR = "revisar";
 const VIDEO_RE = /\.(mp4|mov)$/i;
@@ -65,6 +74,7 @@ export interface TrialPublisherConfig {
   timeZone: string;
   graduation: TrialGraduationStrategy;
   folder: string;
+  skipFolders: string[];
   thumbOffsetMs: number;
   minGapMinutes: number;
 }
@@ -85,6 +95,10 @@ export function trialPublisherConfig(env: NodeJS.ProcessEnv = process.env): Tria
     folder: (env.TRIAL_FOLDER ?? "Reels/Trial").replace(/^\/+|\/+$/g, ""),
     // The variants open on a dark frame (trial.py), so the default cover is a
     // second in.
+    skipFolders: (env.TRIAL_SKIP_FOLDERS ?? "")
+      .split(",")
+      .map((name) => name.trim().toLowerCase())
+      .filter(Boolean),
     thumbOffsetMs: thumbOffsetMs >= 0 ? thumbOffsetMs : 1000,
     minGapMinutes: minGapMinutes >= 0 ? minGapMinutes : 90,
   };
@@ -198,6 +212,40 @@ async function findBaseCampaign(instagramAccountId: string, folderName: string) 
   });
 }
 
+/**
+ * "Z[TRIAL] Sesión" -> done, "Sesión". Plain names ("Costo") are not done.
+ * The typo "[TRAIL]" is accepted: the owner's folders have it.
+ */
+export function parseFolderName(name: string): { done: boolean; label: string } {
+  const done = name.startsWith(`${DONE_PREFIX}[`);
+  const bare = done ? name.slice(DONE_PREFIX.length) : name;
+  return { done, label: bare.replace(/^\[(?:TRIAL|TRAIL)\d*\]\s*/i, "").trim() || bare };
+}
+
+interface FolderSettings {
+  campaign?: string;
+  trialName?: string;
+  speed?: number;
+}
+
+/** trial.json of a folder; null when missing, an error string when unusable. */
+async function readSettings(
+  cloud: OpenCloudClient,
+  folder: DavEntry
+): Promise<FolderSettings | string> {
+  const raw = (await cloud.readText(`${folder.path}/${SETTINGS_FILE}`))?.trim();
+  if (!raw) return {};
+  try {
+    const data = JSON.parse(raw) as Record<string, unknown>;
+    const speed = data.velocidad === undefined ? undefined : parseSpeed(data.velocidad);
+    if (speed === null) return `velocidad inválida (${String(data.velocidad)}); va de 0,5 a 2`;
+    const text = (value: unknown) => (typeof value === "string" && value.trim() ? value.trim() : undefined);
+    return { campaign: text(data.campana), trialName: text(data.nombre), speed };
+  } catch {
+    return `${SETTINGS_FILE} no es un JSON válido`;
+  }
+}
+
 // ─── Notifications ──────────────────────────────────────────────────────────────
 
 // A ping to the owner's phone (ntfy, NTFY_TOPIC). Never throws.
@@ -242,6 +290,10 @@ type Candidate = {
   video: DavEntry;
   caption: string;
   campaign: { id: string; name: string };
+  /** Name after "[TRIALn]" in the campaign made for the reel. */
+  trialName: string;
+  label: string;
+  speed?: number;
 };
 
 const publishedId = (video: DavEntry) => `${video.path}|${video.size}`;
@@ -258,10 +310,14 @@ async function pickCandidate(
   account: Account
 ): Promise<Candidate | null> {
   const folders = (await cloud.list(config.folder)).filter(
-    (entry) => entry.isDir && !entry.name.startsWith("_")
+    (entry) =>
+      entry.isDir &&
+      !entry.name.startsWith("_") &&
+      !parseFolderName(entry.name).done &&
+      !config.skipFolders.includes(parseFolderName(entry.name).label.toLowerCase())
   );
   const lastPublished = await Promise.all(
-    folders.map(async (folder) => Number((await redis.get(lastFolderKey(folder.name))) ?? 0))
+    folders.map(async (folder) => Number((await redis.get(lastFolderKey(parseFolderName(folder.name).label))) ?? 0))
   );
   const order = folders
     .map((folder, i) => ({ folder, last: lastPublished[i] }))
@@ -271,7 +327,7 @@ async function pickCandidate(
     const entries = await cloud.list(folder.path);
     const videos: DavEntry[] = [];
     for (const entry of entries) {
-      if (entry.isDir || !VIDEO_RE.test(entry.name)) continue;
+      if (entry.isDir || !VIDEO_RE.test(entry.name) || entry.name.startsWith(DONE_PREFIX)) continue;
       // A file whose bookkeeping failed after it went out stays put; skip it.
       if (await redis.hexists(PUBLISHED_KEY, publishedId(entry))) continue;
       videos.push(entry);
@@ -280,6 +336,7 @@ async function pickCandidate(
     const video = videos[0];
     if (!video) continue;
 
+    const { label } = parseFolderName(folder.name);
     const caption = (await cloud.readText(`${folder.path}/${CAPTION_FILE}`))?.trim();
     if (!caption) {
       await warnOnce(redis, `caption:${folder.name}`, `Trial: falta el texto de "${folder.name}"`,
@@ -296,10 +353,16 @@ async function pickCandidate(
         `${video.path} pesa ${Math.round(video.size / 1024 / 1024)} MB; Instagram acepta hasta 300 MB.`);
       continue;
     }
-    const campaign = await findBaseCampaign(account.id, folder.name);
+    const settings = await readSettings(cloud, folder);
+    if (typeof settings === "string") {
+      await warnOnce(redis, `settings:${folder.name}`, `Trial: revisá ${SETTINGS_FILE} de "${folder.name}"`, settings);
+      continue;
+    }
+    const campaignName = settings.campaign ?? label;
+    const campaign = await findBaseCampaign(account.id, campaignName);
     if (!campaign) {
-      await warnOnce(redis, `campaign:${folder.name}`, `Trial: no encuentro la campaña "${folder.name}"`,
-        `La carpeta tiene que llamarse igual que la campaña de OpenReply que se copia para cada trial.`);
+      await warnOnce(redis, `campaign:${folder.name}`, `Trial: no encuentro la campaña "${campaignName}"`,
+        `La carpeta tiene que llamarse como la campaña de OpenReply que se copia para cada trial, o decirlo en ${SETTINGS_FILE} ("campana").`);
       continue;
     }
     if (!campaign.isActive) {
@@ -307,7 +370,15 @@ async function pickCandidate(
         `No publico sus trials hasta que la actives.`);
       continue;
     }
-    return { folder, video, caption, campaign: { id: campaign.id, name: campaign.name } };
+    return {
+      folder,
+      video,
+      caption,
+      campaign: { id: campaign.id, name: campaign.name },
+      trialName: settings.trialName ?? campaign.name,
+      label,
+      speed: settings.speed,
+    };
   }
   return null;
 }
@@ -349,10 +420,22 @@ type InFlight = {
 
 export type TrialRunResult =
   | { status: "disabled" | "waiting" | "busy" | "empty" }
-  | { status: "dry-run"; file: string; campaign: string; trialName: string; caption: string; slots?: string[] }
+  | { status: "dry-run"; file: string; campaign: string; trialName: string; caption: string; speed?: number; slots?: string[] }
   | { status: "published"; file: string; campaign: string | null; permalink: string | null }
   | { status: "failed"; file: string; error: string }
   | { status: "review"; file: string };
+
+/** "Z" on the video and, when it was the last one, on its folder. */
+async function markDone(cloud: OpenCloudClient, state: InFlight) {
+  await cloud.rename(state.path, `${DONE_PREFIX}${state.fileName}`);
+  const left = (await cloud.list(state.folderPath)).filter(
+    (entry) => !entry.isDir && VIDEO_RE.test(entry.name) && !entry.name.startsWith(DONE_PREFIX)
+  );
+  const folderName = state.folderPath.split("/").pop() ?? "";
+  if (left.length === 0 && !folderName.startsWith(DONE_PREFIX)) {
+    await cloud.rename(state.folderPath, `${DONE_PREFIX}${folderName}`);
+  }
+}
 
 /**
  * Bookkeeping once a reel is out: move the file, create its campaign, tell the
@@ -372,9 +455,9 @@ async function finishPublished(
   const permalink = await getMediaPermalink(accessToken, state.mediaId).catch(() => null);
 
   try {
-    await cloud.moveInto(state.path, `${state.folderPath}/${PUBLISHED_DIR}`);
+    await markDone(cloud, state);
   } catch (error) {
-    problems.push(`No pude moverlo a ${PUBLISHED_DIR}/ (${errorMessage(error)}); no se va a repetir igual.`);
+    problems.push(`No pude ponerle la ${DONE_PREFIX} (${errorMessage(error)}); no se va a repetir igual.`);
   }
 
   let campaignName: string | null = null;
@@ -470,10 +553,10 @@ async function publishCandidate(
     path: candidate.video.path,
     size: candidate.video.size,
     folderPath: candidate.folder.path,
-    folderName: candidate.folder.name,
+    folderName: candidate.label,
     fileName: candidate.video.name,
     campaignId: candidate.campaign.id,
-    baseName: candidate.campaign.name,
+    baseName: candidate.trialName,
     workspaceId: account.workspaceId,
     instagramAccountId: account.id,
   };
@@ -482,7 +565,13 @@ async function publishCandidate(
 
   // Nothing is public until media_publish: any failure up to it is safe.
   try {
-    const video = await cloud.download(candidate.video.path);
+    let video = await cloud.download(candidate.video.path);
+    if (candidate.speed && candidate.speed !== 1) {
+      video = await changeSpeed(video, candidate.speed);
+      if (video.byteLength > MAX_VIDEO_BYTES) {
+        throw new Error(`el video acelerado pesa ${Math.round(video.byteLength / 1024 / 1024)} MB; Instagram acepta hasta 300 MB`);
+      }
+    }
     const container = await createReelUploadContainer(accessToken, account.instagramId, {
       caption: candidate.caption,
       thumbOffsetMs: config.thumbOffsetMs,
@@ -594,8 +683,9 @@ export async function runTrialPublisher(
       status: "dry-run",
       file: candidate.video.path,
       campaign: candidate.campaign.name,
-      trialName: `[TRIAL${nextTrialNumber(names.map((n) => n.name), candidate.campaign.name)}] ${candidate.campaign.name}`,
+      trialName: `[TRIAL${nextTrialNumber(names.map((n) => n.name), candidate.trialName)}] ${candidate.trialName}`,
       caption: candidate.caption,
+      ...(candidate.speed ? { speed: candidate.speed } : {}),
       slots: (await loadSlots(redis, day, config)).map((slot) => `${slot.at}${slot.done ? " (hecho)" : ""}`),
     };
   }
