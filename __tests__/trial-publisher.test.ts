@@ -13,6 +13,7 @@ const { mockPrisma, mockMeta, mockDuplicate, mockSpeed, mockStage, mockUnstage, 
       getMediaContainerStatus: vi.fn(),
       publishMediaContainer: vi.fn(),
       getMediaPermalink: vi.fn(),
+      getUserMedia: vi.fn(),
     },
     mockDuplicate: vi.fn(),
     mockSpeed: vi.fn(),
@@ -108,6 +109,7 @@ beforeEach(() => {
     { name: "Jarvis" },
   ]);
   mockDuplicate.mockResolvedValue({ id: "copy" });
+  mockMeta.getUserMedia.mockResolvedValue([]);
 
   cloud.list.mockImplementation(async (dir: string) =>
     dir === "Reels/Trial"
@@ -233,6 +235,24 @@ describe("runTrialPublisher", () => {
     seedSlots([{ at: "2026-10-08T15:00:00.000Z", done: false }]);
     redis.kv.set("trial:last", "2026-10-08T15:00:00.000Z");
     expect(await runTrialPublisher({ now: NOW, sleep })).toEqual({ status: "waiting" });
+  });
+
+  it("holds back when the owner posted a reel less than 90 minutes ago", async () => {
+    seedSlots([{ at: "2026-10-08T15:00:00.000Z", done: false }]);
+    mockMeta.getUserMedia.mockResolvedValue([{ id: "m1", timestamp: "2026-10-08T14:20:00+0000" }]);
+    expect(await runTrialPublisher({ now: NOW, sleep })).toEqual({ status: "waiting" });
+    expect(mockMeta.createReelContainer).not.toHaveBeenCalled();
+    expect(slots()[0].done).toBe(false);
+  });
+
+  it("publishes once the owner's last reel is older than the wait, or Instagram cannot be asked", async () => {
+    seedSlots([{ at: "2026-10-08T15:00:00.000Z", done: false }]);
+    mockMeta.getUserMedia.mockRejectedValue(new Error("down"));
+    mockMeta.createReelContainer.mockResolvedValue("c1");
+    mockMeta.getMediaContainerStatus.mockResolvedValue({ status_code: "FINISHED" });
+    mockMeta.publishMediaContainer.mockResolvedValue("media1");
+    mockMeta.getMediaPermalink.mockResolvedValue("https://instagram.com/reel/x/");
+    expect((await runTrialPublisher({ now: NOW, sleep })).status).toBe("published");
   });
 
   it("parks a video Instagram cannot process and publishes nothing", async () => {

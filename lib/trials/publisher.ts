@@ -39,6 +39,7 @@ import {
   MetaApiError,
   createReelContainer,
   getMediaContainerStatus,
+  getUserMedia,
   getMediaPermalink,
   publishMediaContainer,
   type TrialGraduationStrategy,
@@ -77,6 +78,8 @@ export interface TrialPublisherConfig {
   skipFolders: string[];
   thumbOffsetMs: number;
   minGapMinutes: number;
+  /** Minutes to hold back after any reel on the account, ours or the owner's. */
+  ownPostWaitMinutes: number;
 }
 
 export function trialPublisherConfig(env: NodeJS.ProcessEnv = process.env): TrialPublisherConfig {
@@ -85,6 +88,7 @@ export function trialPublisherConfig(env: NodeJS.ProcessEnv = process.env): Tria
   const perDay = Math.trunc(Number(env.TRIAL_PUBLISH_PER_DAY ?? 2));
   const thumbOffsetMs = Number(env.TRIAL_THUMB_OFFSET_MS ?? 1000);
   const minGapMinutes = Number(env.TRIAL_MIN_GAP_MINUTES ?? 90);
+  const ownPostWaitMinutes = Number(env.TRIAL_OWN_POST_WAIT_MINUTES ?? 90);
   return {
     enabled: env.TRIAL_PUBLISH_ENABLED === "true",
     perDay: perDay > 0 ? perDay : 2,
@@ -101,6 +105,7 @@ export function trialPublisherConfig(env: NodeJS.ProcessEnv = process.env): Tria
       .filter(Boolean),
     thumbOffsetMs: thumbOffsetMs >= 0 ? thumbOffsetMs : 1000,
     minGapMinutes: minGapMinutes >= 0 ? minGapMinutes : 90,
+    ownPostWaitMinutes: ownPostWaitMinutes >= 0 ? ownPostWaitMinutes : 90,
   };
 }
 
@@ -632,6 +637,24 @@ async function findAccount(): Promise<Account | null> {
 }
 
 /**
+ * True when the account published something (the owner posting by hand shows
+ * up here too) less than `ownPostWaitMinutes` ago. If Instagram cannot be
+ * asked, do not hold the slot back.
+ */
+async function postedRecently(accessToken: string, now: Date, config: TrialPublisherConfig): Promise<boolean> {
+  if (config.ownPostWaitMinutes <= 0) return false;
+  try {
+    const media = await getUserMedia(decryptToken(accessToken), 5);
+    return media.some((item) => {
+      const at = Date.parse(item.timestamp ?? "");
+      return Number.isFinite(at) && now.getTime() - at < config.ownPostWaitMinutes * 60_000;
+    });
+  } catch {
+    return false;
+  }
+}
+
+/**
  * One tick. Publishes at most one reel, when a slot of the day is due.
  * `force` skips the switch and the schedule (a manual "publish the next one
  * now"); `dryRun` only reports what would go out.
@@ -675,6 +698,10 @@ export async function runTrialPublisher(
   if (!account) {
     await warnOnce(redis, "account", "Trial: no hay cuenta de Instagram conectada", "Conectala en OpenReply.");
     return { status: "disabled" };
+  }
+
+  if (!options.force && (await postedRecently(account.accessToken, now, config))) {
+    return { status: "waiting" };
   }
 
   if (options.dryRun) {
