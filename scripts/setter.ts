@@ -7,6 +7,9 @@
  *   npx tsx scripts/setter.ts resume <usuario>     hand it back to the setter
  *   npx tsx scripts/setter.ts stop <usuario>       take it over (setter quiet)
  *   npx tsx scripts/setter.ts cost                 today's spend and the cap
+ *   npx tsx scripts/setter.ts exclude <usuario>    never use the setter with them
+ *   npx tsx scripts/setter.ts include <usuario>    undo that
+ *   npx tsx scripts/setter.ts excluded             who is excluded
  *   npx tsx scripts/setter.ts context <campaña> [texto]
  *                                                  show or set a campaign's
  *                                                  notes for the setter
@@ -15,6 +18,7 @@ import { prisma } from "@/lib/db/client";
 import { getRedisConnection } from "@/lib/queue/client";
 import { setterDailyBudgetUsd, ownerTimeZone } from "@/lib/setter/config";
 import { spentToday } from "@/lib/setter/budget";
+import { SETTER_EXCLUDED_KEY } from "@/lib/setter/engine";
 
 const fmt = (at: Date | null) =>
   at
@@ -90,6 +94,38 @@ async function main() {
     return;
   }
 
+  if (command === "exclude" || command === "include") {
+    if (!arg) throw new Error("Falta el usuario");
+    const username = arg.replace(/^@/, "").toLowerCase();
+    const redis = getRedisConnection();
+    if (command === "include") {
+      await redis.srem(SETTER_EXCLUDED_KEY, username);
+      console.log(`@${username} vuelve a tener setter en su próximo comentario.`);
+      return;
+    }
+    await redis.sadd(SETTER_EXCLUDED_KEY, username);
+    const conversation = await prisma.setterConversation.findFirst({
+      where: { username: { equals: username, mode: "insensitive" }, status: "ACTIVE" },
+    });
+    if (conversation) {
+      await prisma.setterConversation.update({
+        where: { id: conversation.id },
+        data: { status: "HUMAN", statusReason: "Excluido a mano" },
+      });
+      await redis.del(`setter:token:${conversation.id}`);
+    }
+    console.log(
+      `@${username} excluido: sigue con el flujo de siempre.${conversation ? " Su charla con el setter quedó en tus manos." : ""}`
+    );
+    return;
+  }
+
+  if (command === "excluded") {
+    const list = await getRedisConnection().smembers(SETTER_EXCLUDED_KEY);
+    console.log(list.length ? list.sort().map((u) => `@${u}`).join("\n") : "Nadie excluido.");
+    return;
+  }
+
   if (command === "context") {
     if (!arg) throw new Error("Falta el nombre de la campaña");
     const campaign = await prisma.automation.findFirst({
@@ -108,7 +144,9 @@ async function main() {
     return;
   }
 
-  console.log("Comandos: list, show <usuario>, resume <usuario>, stop <usuario>, cost, context <campaña> [texto]");
+  console.log(
+    "Comandos: list, show <usuario>, resume <usuario>, stop <usuario>, cost, exclude <usuario>, include <usuario>, excluded, context <campaña> [texto]"
+  );
 }
 
 main()

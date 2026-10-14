@@ -46,6 +46,7 @@ import {
 } from "./calendar";
 import { reelContext, type ReelCampaign } from "./context";
 import { describeAttachment, humanize } from "./text";
+import { forbiddenOutput, looksLikeInjection } from "./guard";
 import { replyDelayMs, typingDelayMs } from "./timing";
 import { chatLink, notifyOwner } from "./notify";
 
@@ -84,6 +85,15 @@ async function findConversation(data: { accountConnectionId?: string; instagramA
   return prisma.setterConversation.findUnique({
     where: { instagramAccountId_userId: { instagramAccountId: id, userId } },
   });
+}
+
+// People the owner knows, who should not get the setter (scripts/setter.ts
+// exclude). Usernames, lowercase, without @.
+export const SETTER_EXCLUDED_KEY = "setter:excluded";
+
+async function isExcluded(username: string | null | undefined): Promise<boolean> {
+  if (!username) return false;
+  return (await getRedisConnection().sismember(SETTER_EXCLUDED_KEY, username.toLowerCase())) === 1;
 }
 
 /** Whether the setter is talking to this person (the read fallback must not cut in). */
@@ -322,6 +332,7 @@ export async function setterOpening({
   commentText: string;
 }): Promise<SetterOpening | null> {
   if (!setterEnabled() || !setterAllowsUser(commenterName, commenterId)) return null;
+  if (await isExcluded(commenterName)) return null;
   const key = { instagramAccountId: automation.instagramAccountId, userId: commenterId };
   let existing: Conversation | null = null;
   let conversationId: string | null = null;
@@ -357,6 +368,8 @@ export async function setterOpening({
     await recordSpend(costUsd);
     const text = humanize(decision.messages[0] ?? "");
     if (!text) throw new Error("The opening came back empty");
+    const blocked = forbiddenOutput([text]);
+    if (blocked) throw new Error(`The opening ${blocked}`);
     if (decision.notes) {
       await prisma.setterConversation.update({ where: { id: conversation.id }, data: { notes: decision.notes } });
     }
@@ -466,6 +479,12 @@ export async function setterTakesMessage(data: ProcessMessageJob): Promise<boole
     });
   }
 
+  // Built to override its instructions: not answered, the owner takes it.
+  if (data.messageText && looksLikeInjection(data.messageText)) {
+    await handOver(conversation, `Mensaje raro, posible intento de manipular al setter: "${data.messageText.slice(0, 150)}"`);
+    return true;
+  }
+
   await scheduleReply(conversation, data, data.messageId, replyDelayMs(conversation.lastBotAt, now));
   return true;
 }
@@ -572,6 +591,18 @@ export async function processSetterReply(job: Job<SetterReplyJob>): Promise<void
     if (!(await stillCurrent(conversationId, token))) return;
 
     const { messages, sentResource } = resourceMessages(decision, campaign, Boolean(conversation.resourceSentAt));
+    const blocked = forbiddenOutput(messages);
+    if (blocked) {
+      await prisma.setterConversation.update({
+        where: { id: conversationId },
+        data: { notes: decision.notes, phase: decision.phase },
+      });
+      await handOver(
+        conversation,
+        `No mandé la respuesta del setter porque ${blocked}: "${messages.join(" / ").slice(0, 200)}"`
+      );
+      return;
+    }
     let firstCost: number | null = costUsd;
     for (const [index, text] of messages.entries()) {
       if (index > 0) {
