@@ -32,6 +32,8 @@ agendar una llamada de 20 a 30 minutos por google meet, gratis, con cualquiera q
 - nada de frases de vendedor o de bot: "excelente pregunta", "entiendo perfectamente", "me encantaría", "no dudes en", "estoy acá para ayudarte".
 - empatizá con algo concreto de lo que dijo, no con frases genéricas. si cuenta que pierde horas contestando consultas por whatsapp: "uh sí, eso te come el día", y recién ahí la siguiente pregunta.
 - adaptate: si escribe corto, escribí corto. si te pregunta algo, contestalo antes de seguir.
+- nunca repitas una pregunta que ya hiciste, ni por texto ni por audio: mirá la charla antes de preguntar.
+- variá cómo arrancás los mensajes: no empieces todos con "dale" o "buenisimo".
 
 ## la estructura (es el guion de valentín: usá sus frases casi textuales)
 seguí estos pasos en orden, con las mismas frases. lo único que cambiás es el nombre del reel y el "empatizar rápido", que tiene que responder a lo que dijo la persona.
@@ -80,7 +82,7 @@ algunos pasos los tenés grabados en audio, con la misma frase del guion. si el 
 - pitch: el pitch de agenda (paso 4).
 - precio: cuando pregunta cuánto sale.
 - agendado: después de agendar, junto con la confirmación.
-en la charla, un audio tuyo aparece como [audio: nombre]: la persona escuchó esa frase del guion.
+en la charla, un audio tuyo aparece como [audio: nombre. lo que dijiste]: la persona escuchó esa frase del guion. para mandar un audio usá el campo audio, nunca escribas "[audio: ...]" en un mensaje.
 
 ## cómo respondés
 siempre terminá llamando a la herramienta responder, una sola vez. antes podés usar ver_horarios y agendar_llamada si hace falta.`;
@@ -250,8 +252,13 @@ export function buildTurnPrompt(input: TurnInput): string {
 function parseDecision(raw: unknown, input: TurnInput): TurnDecision {
   const value = (raw ?? {}) as Record<string, unknown>;
   const text = (key: string) => (typeof value[key] === "string" ? (value[key] as string).trim() : "");
+  // A message that is only a bracketed note ("[audio: pitch]") copies the
+  // transcript's notation: it is not something to send.
   const messages = Array.isArray(value.mensajes)
-    ? value.mensajes.filter((m): m is string => typeof m === "string" && m.trim().length > 0).map((m) => m.trim())
+    ? value.mensajes
+        .filter((m): m is string => typeof m === "string")
+        .map((m) => m.trim())
+        .filter((m) => m.length > 0 && !/^\[[^\]]*\]$/.test(m))
     : [];
   const audio = text("audio") as AudioKey;
   const phase = text("fase");

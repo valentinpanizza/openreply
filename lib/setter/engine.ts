@@ -108,7 +108,26 @@ async function transcriptOf(conversationId: string): Promise<TranscriptLine[]> {
     orderBy: { createdAt: "desc" },
     take: TRANSCRIPT_LIMIT,
   });
-  return rows.reverse().map((row) => ({ role: row.role as TranscriptLine["role"], text: row.text, at: row.createdAt }));
+  return rows.reverse().map((row) => ({
+    role: row.role as TranscriptLine["role"],
+    text: row.kind === "audio" ? describeOwnAudio(row.text) : row.text,
+    at: row.createdAt,
+  }));
+}
+
+// What each recorded step says, so the model knows what the person heard and
+// does not ask it again in writing.
+const AUDIO_CONTENT: Record<AudioKey, string> = {
+  situacion: "le preguntaste en qué área necesita más la ia",
+  obstaculo: "le preguntaste si intentó automatizarlo por su cuenta y qué lo frenó",
+  pitch: "le ofreciste la llamada gratis y le preguntaste si coordinan un horario",
+  precio: "le explicaste que el precio depende del caso y que en la llamada le pasás un número",
+  agendado: "le confirmaste la llamada y que le llega la invitación al mail",
+};
+
+function describeOwnAudio(text: string): string {
+  const key = text.replace(/^\[audio: (\w+)\]$/, "$1") as AudioKey;
+  return AUDIO_CONTENT[key] ? `[audio: ${key}. ${AUDIO_CONTENT[key]}]` : text;
 }
 
 async function audiosLeft(conversationId: string): Promise<AudioKey[]> {
