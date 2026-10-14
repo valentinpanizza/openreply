@@ -50,7 +50,7 @@ export function callMinutes(): number {
   return Number.isFinite(value) && value >= 10 ? value : 30;
 }
 
-export const AUDIO_KEYS = ["pitch", "precio", "agendado"] as const;
+export const AUDIO_KEYS = ["situacion", "obstaculo", "pitch", "precio", "agendado"] as const;
 export type AudioKey = (typeof AUDIO_KEYS)[number];
 
 // SETTER_AUDIOS="pitch=https://a.m4a|https://b.m4a;precio=https://c.m4a"
