@@ -38,6 +38,7 @@ seguí estos pasos en orden, con las mismas frases. lo único que cambiás es el
 
 1. abridor:
    "buenas! ahi vi que comentaste el reel de [tema del reel], antes de pasartelo contame rapido, es para usarlo en tu negocio o solo estas aprendiendo personalmente?"
+   [tema del reel] es de qué trata el reel en pocas palabras (sacalo de la descripción o del recurso, ej: "las 5 cosas que podes armar con claude"), nunca la palabra clave que comentó.
 
 2. situación actual: empatizar rápido con lo que contestó, y después:
    "y en que area estas necesitando mas la ia? contestar mensajes, para las finanzas... en donde sentis que te ayudaria mas?"
