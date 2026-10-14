@@ -3,10 +3,12 @@
  * calls. Authorized once with scripts/google-auth.mjs (scope calendar.events):
  * GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET and GOOGLE_REFRESH_TOKEN.
  *
- * Times are offered in the person's own time zone. The owner takes calls at
- * any hour, so the only window is the person's (SETTER_CALL_HOURS, default
- * 9 to 21 their time) and the owner's existing events.
+ * Times are offered in the person's own time zone. A call has to fit both
+ * windows: the person's (SETTER_CALL_HOURS, default 9 to 21 their time) and
+ * the owner's (SETTER_OWNER_HOURS, default 9 to 22 in SETTER_OWNER_TIMEZONE),
+ * and miss the owner's existing events.
  */
+import { ownerTimeZone } from "./config";
 
 const CALENDAR_ID = () => process.env.SETTER_CALENDAR_ID?.trim() || "primary";
 
@@ -131,9 +133,32 @@ export interface Busy {
   end: Date;
 }
 
-function callHours(): [number, number] {
-  const [from, to] = (process.env.SETTER_CALL_HOURS ?? "").split(",").map(Number);
-  return Number.isFinite(from) && Number.isFinite(to) && from < to ? [from, to] : [9, 21];
+function hours(value: string | undefined, fallback: [number, number]): [number, number] {
+  const [from, to] = (value ?? "").split(",").map(Number);
+  return Number.isFinite(from) && Number.isFinite(to) && from < to ? [from, to] : fallback;
+}
+const callHours = () => hours(process.env.SETTER_CALL_HOURS, [9, 21]);
+const ownerHours = () => hours(process.env.SETTER_OWNER_HOURS, [9, 22]);
+
+// Minutes since midnight of an instant, in a zone.
+function minuteOfDay(instant: Date, timeZone: string): number {
+  const [h, m] = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  })
+    .format(instant)
+    .split(":")
+    .map(Number);
+  return h * 60 + m;
+}
+
+/** Whether a call fits within the owner's hours, in his own time zone. */
+export function withinOwnerHours(start: Date, minutes: number, timeZone = ownerTimeZone()): boolean {
+  const [from, to] = ownerHours();
+  const begins = minuteOfDay(start, timeZone);
+  return begins >= from * 60 && begins + minutes <= to * 60;
 }
 
 /**
@@ -160,6 +185,7 @@ export function freeSlots({
     const start = zonedToUtc(date, Math.floor(at / 60), at % 60, timeZone);
     const end = new Date(start.getTime() + minutes * 60_000);
     if (start.getTime() < now.getTime() + 2 * 3600_000) continue;
+    if (!withinOwnerHours(start, minutes)) continue;
     if (busy.some((b) => b.start < end && b.end > start)) continue;
     slots.push(start);
   }

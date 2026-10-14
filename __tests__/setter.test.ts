@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { humanize, describeAttachment } from "../lib/setter/text";
 import { replyDelayMs, typingDelayMs } from "../lib/setter/timing";
 import { setterAllowsUser, setterAudios } from "../lib/setter/config";
-import { freeSlots, zonedToUtc, isValidTimeZone } from "../lib/setter/calendar";
+import { freeSlots, zonedToUtc, isValidTimeZone, withinOwnerHours } from "../lib/setter/calendar";
 import { costUsd } from "../lib/setter/budget";
 import { pageText } from "../lib/setter/context";
 import { buildTurnPrompt, type TurnInput } from "../lib/setter/brain";
@@ -123,6 +123,27 @@ describe("free times", () => {
     expect(labels).not.toContain("11:30");
     expect(labels).toContain("12:00");
     expect(labels.at(-1)).toBe("20:30");
+  });
+
+  it("keeps to the owner's hours in Uruguay, whatever the person's zone", () => {
+    // 9 to 21 in Madrid is 4 to 16 in Montevideo; the owner starts at 9.
+    const slots = freeSlots({
+      date: "2026-10-15",
+      timeZone: "Europe/Madrid",
+      minutes: 30,
+      busy: [],
+      now: new Date("2026-10-14T20:00:00Z"),
+    });
+    expect(slots[0].toISOString()).toBe("2026-10-15T12:00:00.000Z"); // 14:00 Madrid, 9:00 Montevideo
+    expect(slots.every((s) => withinOwnerHours(s, 30, "America/Montevideo"))).toBe(true);
+    // The booking that went out in the first test: 10:00 Madrid, 5:00 Montevideo.
+    expect(withinOwnerHours(new Date("2026-10-15T08:00:00Z"), 30, "America/Montevideo")).toBe(false);
+  });
+
+  it("follows SETTER_OWNER_HOURS", () => {
+    vi.stubEnv("SETTER_OWNER_HOURS", "7,23");
+    expect(withinOwnerHours(new Date("2026-10-15T10:00:00Z"), 30, "America/Montevideo")).toBe(true); // 7:00
+    expect(withinOwnerHours(new Date("2026-10-16T01:45:00Z"), 30, "America/Montevideo")).toBe(false); // 22:45
   });
 
   it("never offers something within the next two hours", () => {

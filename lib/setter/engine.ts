@@ -41,6 +41,7 @@ import {
   formatInZone,
   freeSlotsOn,
   isValidTimeZone,
+  withinOwnerHours,
   zonedToUtc,
 } from "./calendar";
 import { reelContext, type ReelCampaign } from "./context";
@@ -198,6 +199,9 @@ function slotTools(conversation: Conversation, campaign: Awaited<ReturnType<type
       }
       const start = zonedToUtc(match[1], Number(match[2]), Number(match[3]), args.zona_horaria);
       if (start.getTime() < Date.now() + 60 * 60_000) return "ese horario ya pasó o es muy pronto: ofrecé otro.";
+      if (!withinOwnerHours(start, callMinutes())) {
+        return "ese horario no le sirve a valentín: ofrecé uno de los que da ver_horarios.";
+      }
       const end = new Date(start.getTime() + callMinutes() * 60_000);
       if ((await busyBetween(start, end)).length > 0) return "ese horario ya no está libre: ofrecé otro.";
       const when = formatInZone(start, args.zona_horaria);
