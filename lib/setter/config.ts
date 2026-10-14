@@ -50,10 +50,10 @@ export function callMinutes(): number {
   return Number.isFinite(value) && value >= 10 ? value : 30;
 }
 
-export const AUDIO_KEYS = ["presentacion", "pitch", "precio", "agendado"] as const;
+export const AUDIO_KEYS = ["pitch", "precio", "agendado"] as const;
 export type AudioKey = (typeof AUDIO_KEYS)[number];
 
-// SETTER_AUDIOS="presentacion=https://a.m4a|https://b.m4a;pitch=https://c.m4a"
+// SETTER_AUDIOS="pitch=https://a.m4a|https://b.m4a;precio=https://c.m4a"
 // Several files per key: one is picked at random each time.
 export function setterAudios(raw = process.env.SETTER_AUDIOS ?? ""): Partial<Record<AudioKey, string[]>> {
   const audios: Partial<Record<AudioKey, string[]>> = {};

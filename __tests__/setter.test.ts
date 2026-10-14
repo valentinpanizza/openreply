@@ -70,8 +70,8 @@ describe("config", () => {
 
   it("reads the audios by step, several per step, https only", () => {
     expect(
-      setterAudios("presentacion=https://a/1.m4a|https://a/2.m4a; pitch=https://a/3.m4a;precio=http://x;otro=https://y")
-    ).toEqual({ presentacion: ["https://a/1.m4a", "https://a/2.m4a"], pitch: ["https://a/3.m4a"] });
+      setterAudios("pitch=https://a/1.m4a|https://a/2.m4a; agendado=https://a/3.m4a;precio=http://x;otro=https://y")
+    ).toEqual({ pitch: ["https://a/1.m4a", "https://a/2.m4a"], agendado: ["https://a/3.m4a"] });
     expect(setterAudios("")).toEqual({});
   });
 });
