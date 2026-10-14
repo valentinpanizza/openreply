@@ -469,14 +469,14 @@ export async function setterTakesMessage(data: ProcessMessageJob): Promise<boole
   await prisma.setterConversation.update({ where: { id: conversation.id }, data: { lastUserAt: now } });
   if (conversation.status !== "ACTIVE") return true;
 
-  // The setter cannot listen to a voice note or see a photo: the owner can.
-  if (!data.messageText && data.attachmentType) {
-    await notifyOwner({
-      title: `${conversation.username ? `@${conversation.username}` : "Alguien"} ${describeAttachment(data.attachmentType).slice(1, -1)}`,
-      message: "El setter no lo puede escuchar ni ver: le va a pedir que lo escriba. Si querés, contestá vos.",
-      tags: ["speech_balloon"],
-      click: chatLink(conversation.username),
-    });
+  // A voice note, photo or video: the setter cannot hear or see it, and asking
+  // to have it typed reads as a bot. The owner takes the conversation.
+  if (!data.messageText && ["audio", "image", "video"].includes(data.attachmentType ?? "")) {
+    await handOver(
+      conversation,
+      `${describeAttachment(data.attachmentType).slice(1, -1)}: escuchalo/miralo y seguí vos la charla.`
+    );
+    return true;
   }
 
   // Built to override its instructions: not answered, the owner takes it.
