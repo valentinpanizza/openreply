@@ -983,3 +983,14 @@ export async function getMediaPermalink(
   const data = await handleResponse<{ permalink?: string }>(response);
   return data.permalink ?? null;
 }
+
+/** A post's caption and link, for the AI setter to know what the reel says. */
+export async function getMediaCaption(
+  accessToken: string,
+  mediaId: string
+): Promise<{ caption?: string; permalink?: string }> {
+  const url = new URL(`${instagramGraphBase()}/${mediaId}`);
+  url.searchParams.set("fields", "caption,permalink");
+  url.searchParams.set("access_token", accessToken);
+  return handleResponse(await fetch(url.toString(), { signal: AbortSignal.timeout(15_000) }));
+}

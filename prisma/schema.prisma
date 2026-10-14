@@ -208,6 +208,9 @@ model Automation {
   wholeWordMatch Boolean @default(true)
   reportShareSlug    String? @unique
   reportShareEnabled Boolean @default(true)
+  // What the AI setter knows about this campaign's reel, on top of what it
+  // reads by itself (the reel caption and the resource page). Optional.
+  setterContext      String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -439,4 +442,59 @@ model Lead {
 
   @@unique([automationId, userId])
   @@index([workspaceId])
+}
+
+// A DM conversation run by the AI setter (lib/setter). One per person and
+// connected account: commenting on another reel continues the same chat.
+model SetterConversation {
+  id                 String       @id @default(cuid())
+  workspaceId        String
+  // InstagramAccount.id (the connection), not the Instagram user id.
+  instagramAccountId String
+  userId             String
+  username           String?
+  // The campaign whose reel they commented on last.
+  automationId       String?
+  status             SetterStatus @default(ACTIVE)
+  phase              String       @default("abridor")
+  // What the setter has learned about the person, rewritten every turn.
+  notes              String?
+  timezone           String?
+  email              String?
+  callAt             DateTime?
+  eventId            String?
+  resourceSentAt     DateTime?
+  statusReason       String?
+  lastUserAt         DateTime?
+  lastBotAt          DateTime?
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+  messages           SetterMessage[]
+
+  @@unique([instagramAccountId, userId])
+}
+
+model SetterMessage {
+  id             String             @id @default(cuid())
+  conversationId String
+  // user: the person. bot: the setter. owner: written by hand from Instagram.
+  // shadow: what the comparison model would have said (never sent).
+  role           String
+  // text, audio, resource or attachment.
+  kind           String             @default("text")
+  text           String
+  mid            String?            @unique
+  model          String?
+  costUsd        Float?
+  createdAt      DateTime           @default(now())
+  conversation   SetterConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, createdAt])
+}
+
+enum SetterStatus {
+  // The setter answers.
+  ACTIVE
+  // The owner took over (wrote by hand, or the setter handed it over).
+  HUMAN
 }

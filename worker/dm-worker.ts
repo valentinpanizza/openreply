@@ -3,6 +3,7 @@ import { recordWorkerHeartbeat } from "@/lib/ops/worker-health";
 import { reconcileComments } from "@/lib/polling/comment-reconciler";
 import { attachPendingNextReels } from "@/lib/automation/attach-next-reel";
 import { runTrialPublisher } from "@/lib/trials/publisher";
+import { syncSetterEchoesFlag } from "@/lib/setter/engine";
 import os from "node:os";
 
 const worker = createDMWorker();
@@ -23,6 +24,7 @@ async function heartbeat() {
       hostname: os.hostname(),
       startedAt,
     });
+    await syncSetterEchoesFlag();
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
     console.error("[DM Worker] Heartbeat failed:", message);

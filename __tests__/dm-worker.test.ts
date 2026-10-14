@@ -149,6 +149,9 @@ vi.mock("@/lib/queue/client", () => ({
   MESSAGE_JOB_NAME: "process-message",
   LEAD_JOB_NAME: "notify-lead",
   LEAD_AUDIO_JOB_NAME: "send-lead-audio",
+  SETTER_REPLY_JOB_NAME: "setter-reply",
+  SETTER_ECHO_JOB_NAME: "setter-echo",
+  SETTER_REMINDER_JOB_NAME: "setter-reminder",
   OPENING_DM_READ_FALLBACK_WINDOW_MS: 24 * 60 * 60 * 1000,
 }));
 

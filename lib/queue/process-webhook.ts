@@ -4,9 +4,12 @@ import {
   MESSAGE_JOB_NAME,
   OPENING_DM_READ_FALLBACK_WINDOW_MS,
   POSTBACK_JOB_NAME,
+  SETTER_ECHO_JOB_NAME,
 } from '@/lib/queue/client';
-import { parseCommentEvents, parseMessageEvents, parsePostbackEvents, parseReadEvents } from '@/lib/meta/webhook';
+import { parseCommentEvents, parseEchoEvents, parseMessageEvents, parsePostbackEvents, parseReadEvents } from '@/lib/meta/webhook';
 import { Prisma, type InstagramProvider } from '@/app/generated/prisma/client';
+import { getRedisConnection } from '@/lib/queue/client';
+import { SETTER_ECHOES_FLAG } from '@/lib/setter/config';
 
 const OPENING_DM_READ_FALLBACK_DELAY_MS = 5 * 60 * 1000;
 type InstagramPayload = Parameters<typeof parseCommentEvents>[0];
@@ -133,6 +136,37 @@ export async function processInstagramWebhook({ payload: incoming, provider, wor
           data: { workspaceId: account.workspaceId },
         });
       }
+    }
+
+    // Messages the account sent. Only the AI setter cares, and only while a
+    // worker running it says so (SETTER_ECHOES_FLAG). A short delay lets the
+    // setter record the ids of its own messages first, so what is left was
+    // written by hand.
+    const echoEvents = parseEchoEvents(
+      payload as Parameters<typeof parseEchoEvents>[0]
+    );
+    if (echoEvents.length > 0 && !(await getRedisConnection().get(SETTER_ECHOES_FLAG))) {
+      echoEvents.length = 0;
+    }
+    for (const event of echoEvents) {
+      await queue.add(
+        SETTER_ECHO_JOB_NAME,
+        {
+          instagramAccountId: event.instagramAccountId,
+          accountConnectionId: accountMap.get(event.instagramAccountId)?.id,
+          userId: event.userId,
+          messageId: event.messageId,
+          messageText: event.messageText,
+          ...(event.attachmentType ? { attachmentType: event.attachmentType } : {}),
+        },
+        {
+          delay: 15_000,
+          jobId: `setter_echo_${event.instagramAccountId}_${Buffer.from(
+            event.messageId
+          ).toString("base64url")}`,
+          removeOnComplete: true,
+        }
+      );
     }
 
     // If a user reads the opening DM and never taps the button, deliver the

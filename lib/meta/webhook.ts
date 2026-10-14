@@ -99,6 +99,17 @@ export interface WebhookMessageEvent {
   quickReplyPayload?: string;
 }
 
+// A message the connected account itself sent: an autoreply, or one the
+// owner wrote by hand in the Instagram app.
+export interface WebhookEchoEvent {
+  instagramAccountId: string;
+  // The person the message went to.
+  userId: string;
+  messageId: string;
+  messageText: string;
+  attachmentType?: string;
+}
+
 export interface WebhookPostbackEvent {
   instagramAccountId: string;
   userId: string;
@@ -275,6 +286,39 @@ export function parseReadEvents(payload: WebhookPayload): WebhookReadEvent[] {
         instagramAccountId: accountId,
         userId,
         watermark: messaging.read.watermark,
+      });
+    }
+  }
+
+  return events;
+}
+
+/**
+ * Parse echoes: messages the connected account sent. The AI setter uses them
+ * to notice the owner writing by hand, and steps aside.
+ */
+export function parseEchoEvents(payload: WebhookPayload): WebhookEchoEvent[] {
+  const events: WebhookEchoEvent[] = [];
+
+  if (payload.object !== "instagram") return events;
+
+  for (const entry of payload.entry ?? []) {
+    for (const messaging of entry.messaging ?? []) {
+      const message = messaging.message;
+      if (!message?.is_echo || message.is_deleted || message.is_unsupported) continue;
+
+      const accountId = entry.id ?? messaging.sender?.id;
+      const userId = messaging.recipient?.id;
+      const messageId = message.mid;
+      if (!accountId || !userId || !messageId || userId === accountId) continue;
+
+      const attachmentType = message.attachments?.[0]?.type;
+      events.push({
+        instagramAccountId: accountId,
+        userId,
+        messageId,
+        messageText: message.text?.trim() ?? "",
+        ...(attachmentType ? { attachmentType } : {}),
       });
     }
   }

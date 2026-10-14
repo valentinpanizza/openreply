@@ -9,6 +9,9 @@ import {
   LEAD_JOB_NAME,
   LEAD_AUDIO_JOB_NAME,
   OPENING_DM_READ_FALLBACK_WINDOW_MS,
+  SETTER_ECHO_JOB_NAME,
+  SETTER_REMINDER_JOB_NAME,
+  SETTER_REPLY_JOB_NAME,
   type DmQueueJob,
   type ProcessCommentJob,
   type ProcessMessageJob,
@@ -16,7 +19,20 @@ import {
   type ProcessFollowUpJob,
   type NotifyLeadJob,
   type LeadAudioJob,
+  type SetterEchoJob,
+  type SetterReminderJob,
+  type SetterReplyJob,
 } from "./client";
+import {
+  processSetterEcho,
+  processSetterReminder,
+  processSetterReply,
+  recordSetterOpening,
+  setterHasConversation,
+  setterOpening,
+  setterTakesMessage,
+  setterTakesTap,
+} from "@/lib/setter/engine";
 import { leadAudioSendAt, leadAudioUrls } from "@/lib/leads/audio";
 import { prisma } from "@/lib/db/client";
 import {
@@ -1045,8 +1061,37 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
           : alreadyFollows !== true;
     }
 
+    // The AI setter writes the first message itself, for the people it is
+    // allowed to talk to (lib/setter). Null: the campaign's usual flow below.
+    const setter = await setterOpening({
+      automation,
+      context: accessToken,
+      commenterId,
+      commenterName,
+      commentText,
+    });
+    if (setter?.kind === "owner") {
+      // The owner is already talking to them by hand: send nothing.
+      await releaseWorkspaceDMReservation(automation.workspaceId, usage.periodStart);
+      if (rateLimit?.reserved) await releaseDMSlot(instagramAccountId);
+      await prisma.dmLog.update({
+        where: { automationId_commentId: { automationId: automation.id, commentId } },
+        data: { status: "SKIPPED_DEDUP", errorMessage: "The owner is talking to this person by hand" },
+      });
+      continue;
+    }
+
     try {
-      if (useOpeningDm) {
+      if (setter) {
+        const sent = await sendPrivateReply({
+          context: accessToken,
+          instagramAccountId: automation.instagramAccount.instagramId,
+          commentId: commentId,
+          message: setter.text,
+          postId: mediaId,
+        });
+        await recordSetterOpening(setter, sent?.message_id);
+      } else if (useOpeningDm) {
         // {keyword}: the word they commented, so the first message reads as
         // the answer to their request that it is.
         const openingText = renderMessageWithTracking({
@@ -1352,6 +1397,12 @@ async function sendFollowRecheckAck({
  */
 async function processPostback(job: Job<ProcessPostbackJob>): Promise<void> {
   const { instagramAccountId, userId, payload, fallback } = job.data;
+
+  // Reading the setter's first message is not a request for the link: the
+  // setter decides when to send it. A tap on an older message's button goes
+  // to the setter as part of the chat.
+  if (fallback && (await setterHasConversation(job.data, userId))) return;
+  if (!fallback && (await setterTakesTap(job.data, userId))) return;
 
   const isFollowCheck = payload.startsWith("followcheck:");
   if (!isFollowCheck && !payload.startsWith("reveal:")) return;
@@ -1821,6 +1872,9 @@ async function processFollowUp(job: Job<ProcessFollowUpJob>): Promise<void> {
  */
 async function processMessage(job: Job<ProcessMessageJob>): Promise<void> {
   const { instagramAccountId, messageId, messageText, senderId } = job.data;
+
+  // Someone the AI setter is talking to: it answers, nothing else does.
+  if (await setterTakesMessage(job.data)) return;
 
   await notifyLeadReply(job.data);
   // A reply to a plain-text first message (see openingTextOnly), or a tap on
@@ -2395,6 +2449,15 @@ async function dispatchJob(job: Job<DmQueueJob>): Promise<void> {
   }
   if (job.name === LEAD_AUDIO_JOB_NAME) {
     return processLeadAudio(job as Job<LeadAudioJob>);
+  }
+  if (job.name === SETTER_REPLY_JOB_NAME) {
+    return processSetterReply(job as Job<SetterReplyJob>);
+  }
+  if (job.name === SETTER_ECHO_JOB_NAME) {
+    return processSetterEcho(job as Job<SetterEchoJob>);
+  }
+  if (job.name === SETTER_REMINDER_JOB_NAME) {
+    return processSetterReminder(job as Job<SetterReminderJob>);
   }
   return processComment(job as Job<ProcessCommentJob>);
 }

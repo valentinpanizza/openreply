@@ -103,13 +103,48 @@ export interface LeadAudioJob {
   leadId: string;
 }
 
+// The AI setter (lib/setter) answers a conversation. Scheduled with a delay
+// after each message from the person; `token` lets a later message supersede
+// an earlier pending answer, so a burst of messages gets one reply.
+export interface SetterReplyJob {
+  accountConnectionId?: string;
+  instagramAccountId: string;
+  conversationId: string;
+  token: string;
+  // Set on a retry after a failed answer, or a wait for the previous one.
+  retry?: number;
+}
+
+// A message the connected account sent (an echo). One the setter did not send
+// was written by hand by the owner, who takes the conversation over.
+export interface SetterEchoJob {
+  accountConnectionId?: string;
+  instagramAccountId: string;
+  userId: string;
+  messageId: string;
+  messageText: string;
+  attachmentType?: string;
+}
+
+// A reminder before a call the setter booked. Best effort: Instagram only
+// lets it through within 24 hours of the person's last message.
+export interface SetterReminderJob {
+  accountConnectionId?: string;
+  instagramAccountId: string;
+  conversationId: string;
+  callAt: string;
+}
+
 export type DmQueueJob =
   | ProcessCommentJob
   | ProcessPostbackJob
   | ProcessFollowUpJob
   | ProcessMessageJob
   | NotifyLeadJob
-  | LeadAudioJob;
+  | LeadAudioJob
+  | SetterReplyJob
+  | SetterEchoJob
+  | SetterReminderJob;
 
 export const POSTBACK_JOB_NAME = "process-postback";
 
@@ -120,6 +155,9 @@ export const FOLLOWUP_JOB_NAME = "process-followup";
 export const MESSAGE_JOB_NAME = "process-message";
 export const LEAD_JOB_NAME = "notify-lead";
 export const LEAD_AUDIO_JOB_NAME = "send-lead-audio";
+export const SETTER_REPLY_JOB_NAME = "setter-reply";
+export const SETTER_ECHO_JOB_NAME = "setter-echo";
+export const SETTER_REMINDER_JOB_NAME = "setter-reminder";
 
 let dmQueue: Queue<DmQueueJob> | null = null;
 
