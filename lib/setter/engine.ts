@@ -38,6 +38,7 @@ import {
   busyBetween,
   calendarConfigured,
   createCallEvent,
+  createPrivateEvent,
   formatInZone,
   freeSlotsOn,
   isValidTimeZone,
@@ -49,6 +50,7 @@ import { describeAttachment, humanize } from "./text";
 import { forbiddenOutput, looksLikeInjection } from "./guard";
 import { replyDelayMs, typingDelayMs } from "./timing";
 import { chatLink, notifyOwner } from "./notify";
+import { callPrepPrompt } from "./prep";
 
 /**
  * The AI setter: instead of the campaign's fixed messages, Claude talks to the
@@ -113,11 +115,11 @@ async function campaignFor(automationId: string | null) {
   });
 }
 
-async function transcriptOf(conversationId: string): Promise<TranscriptLine[]> {
+async function transcriptOf(conversationId: string, limit = TRANSCRIPT_LIMIT): Promise<TranscriptLine[]> {
   const rows = await prisma.setterMessage.findMany({
     where: { conversationId, role: { in: ["user", "bot", "owner"] } },
     orderBy: { createdAt: "desc" },
-    take: TRANSCRIPT_LIMIT,
+    take: limit,
   });
   return rows.reverse().map((row) => ({
     role: row.role as TranscriptLine["role"],
@@ -222,13 +224,8 @@ function slotTools(conversation: Conversation, campaign: Awaited<ReturnType<type
         minutes: callMinutes(),
         email,
         summary: `Llamada NodeStudio con ${args.nombre || conversation.username || "lead de instagram"}`,
-        description: [
-          conversation.username ? `Instagram: https://instagram.com/${conversation.username}` : null,
-          campaign ? `Campaña: ${campaign.name}` : null,
-          conversation.notes ? `Notas del setter: ${conversation.notes}` : null,
-        ]
-          .filter(Boolean)
-          .join("\n"),
+        // The person sees this: nothing about them here (that goes in the prep event).
+        description: "Llamada con Valentín Panizza (NodeStudio) por Google Meet.",
       });
       const updated = await prisma.setterConversation.update({
         where: { id: conversation.id },
@@ -239,6 +236,29 @@ function slotTools(conversation: Conversation, campaign: Awaited<ReturnType<type
       return `agendada: ${when} (hora de la persona), invitación con link de meet enviada a ${email}. esto es para vos, no lo copies: confirmale el día y la hora hablándole a ella ("te llega la invitación a tu mail").`;
     },
   };
+}
+
+const PREP_LEAD_MINUTES = 30;
+
+/** The prompt to prepare a booked call in Claude (see prep.ts). */
+export async function callPrep(
+  conversation: Conversation,
+  campaign?: Awaited<ReturnType<typeof campaignFor>>
+): Promise<string> {
+  if (!conversation.callAt) throw new Error("No tiene llamada agendada");
+  campaign ??= await campaignFor(conversation.automationId);
+  return callPrepPrompt({
+    username: conversation.username,
+    email: conversation.email,
+    callAt: conversation.callAt,
+    minutes: callMinutes(),
+    personTimeZone: conversation.timezone,
+    ownerTimeZone: ownerTimeZone(),
+    // Without an Instagram context: the cached text, or name, keywords and resource.
+    reel: campaign ? await reelContext(campaign as ReelCampaign, null) : "",
+    notes: conversation.notes,
+    transcript: await transcriptOf(conversation.id, 500),
+  });
 }
 
 async function afterBooking(
@@ -291,9 +311,23 @@ async function afterBooking(
       );
     }
   }
+  let prepLink: string | null = null;
+  try {
+    const prep = await createPrivateEvent({
+      start: new Date(start.getTime() - PREP_LEAD_MINUTES * 60_000),
+      minutes: 20,
+      summary: `Preparar llamada con ${conversation.username ? `@${conversation.username}` : "lead de instagram"}`,
+      description: `Copiá todo esto y pegalo en Claude:\n\n${await callPrep(conversation, campaign)}`,
+    });
+    prepLink = prep.link;
+  } catch (error) {
+    console.error("[Setter] Call prep event failed:", formatError(error));
+  }
   await notifyOwner({
     title: `📅 ${conversation.username ? `@${conversation.username}` : "Alguien"} agendó una llamada`,
-    message: `${formatInZone(start, ownerTimeZone())} (tu hora) · ${conversation.email ?? ""}`,
+    message: `${formatInZone(start, ownerTimeZone())} (tu hora) · ${conversation.email ?? ""}${
+      prepLink ? "\nEl prompt para preparar la llamada está en tu calendario, 30 min antes." : ""
+    }`,
     tags: ["calendar"],
     click: chatLink(conversation.username),
   });

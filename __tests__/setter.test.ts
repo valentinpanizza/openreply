@@ -12,6 +12,7 @@ import { pageText } from "../lib/setter/context";
 import { buildTurnPrompt, type TurnInput } from "../lib/setter/brain";
 import { parseEchoEvents, parseMessageEvents } from "../lib/meta/webhook";
 import { forbiddenOutput, looksLikeInjection } from "../lib/setter/guard";
+import { callPrepPrompt, type PrepInput } from "../lib/setter/prep";
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -279,5 +280,45 @@ describe("guard", () => {
     expect(forbiddenOutput(["te queda mañana a las 10:30 o 16:00?"])).toBeNull();
     expect(forbiddenOutput(["tenes 50 consultas por dia? uh"])).toBeNull();
     expect(forbiddenOutput(["en la guia estan las instrucciones paso a paso"])).toBeNull();
+  });
+});
+
+describe("call prep", () => {
+  const input: PrepInput = {
+    username: "juan",
+    email: "juan@mail.com",
+    callAt: new Date("2026-10-16T17:00:00Z"),
+    minutes: 30,
+    personTimeZone: "America/Mexico_City",
+    ownerTimeZone: "America/Montevideo",
+    reel: "campaña: Skills",
+    notes: "inmobiliaria, pierde horas en whatsapp",
+    transcript: [
+      { role: "bot", text: "buenas! es para tu negocio?", at: new Date("2026-10-15T15:00:00Z") },
+      { role: "user", text: "si, una inmobiliaria", at: new Date("2026-10-15T15:01:00Z") },
+    ],
+  };
+
+  it("has the person, the call, the notes and the chat", () => {
+    const prompt = callPrepPrompt(input);
+    expect(prompt).toContain("con @juan el viernes, 16/10, 14:00, mi hora");
+    expect(prompt).toContain("(para la persona: viernes, 16/10, 11:00, America/Mexico_City)");
+    expect(prompt).toContain("Mail: juan@mail.com.");
+    expect(prompt).toContain("inmobiliaria, pierde horas en whatsapp");
+    expect(prompt).toContain("[15/10, 12:01] persona: si, una inmobiliaria");
+    expect(prompt).toContain("Ayudame a preparar la llamada");
+  });
+
+  it("keeps the newest messages when the chat is too long", () => {
+    const transcript = Array.from({ length: 300 }, (_, i) => ({
+      role: "user" as const,
+      text: `mensaje ${i} ${"x".repeat(40)}`,
+      at: new Date(Date.UTC(2026, 9, 15, 15, i % 60)),
+    }));
+    const prompt = callPrepPrompt({ ...input, transcript });
+    expect(prompt.length).toBeLessThanOrEqual(7_500);
+    expect(prompt).toContain("mensaje 299 ");
+    expect(prompt).not.toContain("mensaje 0 ");
+    expect(prompt).toMatch(/\(…\d+ mensajes anteriores\)/);
   });
 });

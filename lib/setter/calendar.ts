@@ -265,3 +265,34 @@ export async function createCallEvent({
   });
   return { id: event.id, meetLink: event.hangoutLink ?? null };
 }
+
+/**
+ * An event only on the owner's calendar (no guests, no Meet), marked free so
+ * it never blocks a call slot. For his own notes, like the call prep.
+ */
+export async function createPrivateEvent({
+  start,
+  minutes,
+  summary,
+  description,
+}: {
+  start: Date;
+  minutes: number;
+  summary: string;
+  description: string;
+}): Promise<{ id: string; link: string | null }> {
+  const end = new Date(start.getTime() + minutes * 60_000);
+  const event = await calendarFetch<CalendarEvent>(`/events?sendUpdates=none`, {
+    method: "POST",
+    body: JSON.stringify({
+      summary,
+      description,
+      start: { dateTime: start.toISOString() },
+      end: { dateTime: end.toISOString() },
+      transparency: "transparent",
+      visibility: "private",
+      reminders: { useDefault: true },
+    }),
+  });
+  return { id: event.id, link: event.htmlLink ?? null };
+}

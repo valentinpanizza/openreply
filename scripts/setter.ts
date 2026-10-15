@@ -6,6 +6,8 @@
  *                                                  comparison model's answers
  *   npx tsx scripts/setter.ts resume <usuario>     hand it back to the setter
  *   npx tsx scripts/setter.ts stop <usuario>       take it over (setter quiet)
+ *   npx tsx scripts/setter.ts prep <usuario>       prompt to prepare the call in
+ *                                                  Claude, with the chat so far
  *   npx tsx scripts/setter.ts cost                 today's spend and the cap
  *   npx tsx scripts/setter.ts exclude <usuario>    never use the setter with them
  *   npx tsx scripts/setter.ts include <usuario>    undo that
@@ -18,7 +20,7 @@ import { prisma } from "@/lib/db/client";
 import { getRedisConnection } from "@/lib/queue/client";
 import { setterDailyBudgetUsd, ownerTimeZone } from "@/lib/setter/config";
 import { spentToday } from "@/lib/setter/budget";
-import { SETTER_EXCLUDED_KEY } from "@/lib/setter/engine";
+import { SETTER_EXCLUDED_KEY, callPrep } from "@/lib/setter/engine";
 
 const fmt = (at: Date | null) =>
   at
@@ -72,6 +74,11 @@ async function main() {
       console.log(`${fmt(m.createdAt)} ${who[m.role] ?? m.role}${model}: ${m.text}`);
     }
     console.log(`\ncosto de esta charla: US$ ${cost.toFixed(4)}`);
+    return;
+  }
+
+  if (command === "prep") {
+    console.log(await callPrep(await byUsername(arg)));
     return;
   }
 
@@ -145,7 +152,7 @@ async function main() {
   }
 
   console.log(
-    "Comandos: list, show <usuario>, resume <usuario>, stop <usuario>, cost, exclude <usuario>, include <usuario>, excluded, context <campaña> [texto]"
+    "Comandos: list, show <usuario>, prep <usuario>, resume <usuario>, stop <usuario>, cost, exclude <usuario>, include <usuario>, excluded, context <campaña> [texto]"
   );
 }
 
