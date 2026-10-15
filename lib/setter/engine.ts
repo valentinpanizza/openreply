@@ -236,7 +236,7 @@ function slotTools(conversation: Conversation, campaign: Awaited<ReturnType<type
       });
       Object.assign(conversation, updated);
       await afterBooking(updated, campaign, start);
-      return `listo, agendado para el ${when} (hora de la persona). la invitación con el link de meet le llega a ${email}.${event.meetLink ? ` link: ${event.meetLink}` : ""}`;
+      return `agendada: ${when} (hora de la persona), invitación con link de meet enviada a ${email}. esto es para vos, no lo copies: confirmale el día y la hora hablándole a ella ("te llega la invitación a tu mail").`;
     },
   };
 }
