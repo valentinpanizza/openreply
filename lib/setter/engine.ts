@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { Job } from "bullmq";
 import { prisma } from "@/lib/db/client";
 import {
@@ -342,6 +343,9 @@ export async function syncSetterEchoesFlag(): Promise<void> {
 
 // ─── Opening: the private reply to a comment ────────────────────────────────────
 
+const OPENER_CACHE_PREFIX = "setter:opener:";
+const OPENER_CACHE_SECONDS = 14 * 24 * 3600;
+
 export type SetterOpening =
   | { kind: "send"; conversationId: string; text: string; model: string; costUsd: number }
   | { kind: "owner" };
@@ -398,6 +402,17 @@ export async function setterOpening({
     const campaign = await campaignFor(automation.id);
     const model = setterModel();
     const input = await turnInput("abridor", conversation, campaign, context);
+    // The first message to a stranger is the script's opener with the reel's
+    // topic: the same for everyone who comments on that reel, so it is written
+    // once and reused. Someone already talking to the setter gets a fresh one.
+    const firstContact = !input.transcript.some((line) => line.role !== "user");
+    const cacheKey = `${OPENER_CACHE_PREFIX}${automation.id}:${createHash("sha1").update(input.reel).digest("hex").slice(0, 12)}`;
+    if (firstContact) {
+      const cached = await getRedisConnection().get(cacheKey);
+      if (cached && !forbiddenOutput([cached])) {
+        return { kind: "send", conversationId: conversation.id, text: cached, model, costUsd: 0 };
+      }
+    }
     const { decision, costUsd } = await runTurn(model, input, slotTools(conversation, campaign, true));
     await recordSpend(costUsd);
     const text = humanize(decision.messages[0] ?? "");
@@ -407,6 +422,7 @@ export async function setterOpening({
     if (decision.notes) {
       await prisma.setterConversation.update({ where: { id: conversation.id }, data: { notes: decision.notes } });
     }
+    if (firstContact) await getRedisConnection().set(cacheKey, text, "EX", OPENER_CACHE_SECONDS);
     return { kind: "send", conversationId: conversation.id, text, model, costUsd };
   } catch (error) {
     console.error("[Setter] Opening failed, falling back to the campaign:", formatError(error));
