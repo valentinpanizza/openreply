@@ -80,6 +80,8 @@ export interface ProcessMessageJob {
   senderId: string;
   // Set when the message is (or starts with) an attachment, e.g. "audio".
   attachmentType?: string;
+  // Where Meta serves a voice note, so the setter can transcribe it.
+  attachmentUrl?: string;
   // Set when the message is a tap on one of our quick replies.
   quickReplyPayload?: string;
 }

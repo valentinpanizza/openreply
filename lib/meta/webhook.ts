@@ -82,7 +82,7 @@ interface WebhookEntry {
       is_echo?: boolean;
       is_deleted?: boolean;
       is_unsupported?: boolean;
-      attachments?: Array<{ type?: string }>;
+      attachments?: Array<{ type?: string; payload?: { url?: string } }>;
       quick_reply?: { payload?: string };
     };
   }>;
@@ -95,6 +95,8 @@ export interface WebhookMessageEvent {
   messageText: string;
   senderId: string;
   attachmentType?: string;
+  // Where Meta serves the attachment (a voice note), for a short while.
+  attachmentUrl?: string;
   // Set when the message is a tap on one of our quick replies.
   quickReplyPayload?: string;
 }
@@ -237,6 +239,7 @@ export function parseMessageEvents(
 
       const text = message.text?.trim() ?? "";
       const attachmentType = message.attachments?.[0]?.type;
+      const attachmentUrl = message.attachments?.[0]?.payload?.url;
       const quickReplyPayload = message.quick_reply?.payload;
       const messageId = message.mid;
       const senderId = messaging.sender?.id;
@@ -254,6 +257,7 @@ export function parseMessageEvents(
         messageText: text,
         senderId,
         ...(attachmentType ? { attachmentType } : {}),
+        ...(attachmentType === "audio" && attachmentUrl ? { attachmentUrl } : {}),
         ...(quickReplyPayload ? { quickReplyPayload } : {}),
       });
     }

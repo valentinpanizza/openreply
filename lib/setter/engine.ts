@@ -48,6 +48,7 @@ import {
 } from "./calendar";
 import { reelContext, type ReelCampaign } from "./context";
 import { describeAttachment, humanize } from "./text";
+import { transcribeAudio } from "./transcribe";
 import { forbiddenOutput, looksLikeInjection } from "./guard";
 import { replyDelayMs, typingDelayMs } from "./timing";
 import { chatLink, notifyOwner } from "./notify";
@@ -499,7 +500,13 @@ export async function setterTakesMessage(data: ProcessMessageJob): Promise<boole
   const conversation = await findConversation(data, data.senderId);
   if (!conversation) return false;
 
-  const text = data.messageText || describeAttachment(data.attachmentType);
+  // A voice note is read as text when it can be transcribed; otherwise the
+  // owner listens to it (below).
+  const voiceText =
+    !data.messageText && data.attachmentType === "audio" && conversation.status === "ACTIVE"
+      ? await transcribeAudio(data.attachmentUrl)
+      : null;
+  const text = data.messageText || (voiceText ? `[audio de voz, transcripto] ${voiceText}` : describeAttachment(data.attachmentType));
   try {
     await prisma.setterMessage.create({
       data: {
@@ -521,7 +528,7 @@ export async function setterTakesMessage(data: ProcessMessageJob): Promise<boole
 
   // A voice note, photo or video: the setter cannot hear or see it, and asking
   // to have it typed reads as a bot. The owner takes the conversation.
-  if (!data.messageText && ["audio", "image", "video"].includes(data.attachmentType ?? "")) {
+  if (!data.messageText && !voiceText && ["audio", "image", "video"].includes(data.attachmentType ?? "")) {
     await handOver(
       conversation,
       `${describeAttachment(data.attachmentType).slice(1, -1)}: escuchalo/miralo y seguí vos la charla.`
@@ -530,8 +537,9 @@ export async function setterTakesMessage(data: ProcessMessageJob): Promise<boole
   }
 
   // Built to override its instructions: not answered, the owner takes it.
-  if (data.messageText && looksLikeInjection(data.messageText)) {
-    await handOver(conversation, `Mensaje raro, posible intento de manipular al setter: "${data.messageText.slice(0, 150)}"`);
+  const heard = data.messageText || voiceText;
+  if (heard && looksLikeInjection(heard)) {
+    await handOver(conversation, `Mensaje raro, posible intento de manipular al setter: "${heard.slice(0, 150)}"`);
     return true;
   }
 

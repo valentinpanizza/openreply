@@ -117,6 +117,7 @@ export async function processInstagramWebhook({ payload: incoming, provider, wor
           messageText: event.messageText,
           senderId: event.senderId,
           ...(event.attachmentType ? { attachmentType: event.attachmentType } : {}),
+          ...(event.attachmentUrl ? { attachmentUrl: event.attachmentUrl } : {}),
           ...(event.quickReplyPayload ? { quickReplyPayload: event.quickReplyPayload } : {}),
         },
         {

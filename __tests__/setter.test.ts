@@ -12,6 +12,7 @@ import { pageText } from "../lib/setter/context";
 import { buildTurnPrompt, parseDecision, type TurnInput } from "../lib/setter/brain";
 import { parseEchoEvents, parseMessageEvents } from "../lib/meta/webhook";
 import { forbiddenOutput, looksLikeInjection } from "../lib/setter/guard";
+import { transcribeAudio } from "../lib/setter/transcribe";
 import { callPrepPrompt, type PrepInput } from "../lib/setter/prep";
 
 afterEach(() => {
@@ -333,5 +334,61 @@ describe("handoff parsing", () => {
 
   it("keeps a real reason", () => {
     expect(handoff("insiste con el precio")).toBe("insiste con el precio");
+  });
+});
+
+describe("voice notes", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+
+  const audioThenText = (text: unknown, ok = true) =>
+    vi
+      .fn()
+      .mockResolvedValueOnce(new Response(new Uint8Array([1, 2, 3]), { headers: { "content-type": "audio/mp4" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ text }), { status: ok ? 200 : 500 }));
+
+  it("is off without a key", async () => {
+    vi.stubEnv("GROQ_API_KEY", "");
+    expect(await transcribeAudio("https://cdn.example/a.m4a")).toBeNull();
+  });
+
+  it("returns the transcription", async () => {
+    vi.stubEnv("GROQ_API_KEY", "gsk_test");
+    const fetchMock = audioThenText("  hola   tengo un negocio ");
+    vi.stubGlobal("fetch", fetchMock);
+    expect(await transcribeAudio("https://cdn.example/a.m4a")).toBe("hola tengo un negocio");
+    expect(fetchMock.mock.calls[1][0]).toContain("groq.com");
+  });
+
+  it("gives up on silence, errors and non-https links", async () => {
+    vi.stubEnv("GROQ_API_KEY", "gsk_test");
+    vi.stubGlobal("fetch", audioThenText(" . "));
+    expect(await transcribeAudio("https://cdn.example/a.m4a")).toBeNull();
+    vi.stubGlobal("fetch", audioThenText("hola", false));
+    expect(await transcribeAudio("https://cdn.example/a.m4a")).toBeNull();
+    expect(await transcribeAudio("http://cdn.example/a.m4a")).toBeNull();
+    expect(await transcribeAudio(undefined)).toBeNull();
+  });
+
+  it("carries a voice note's url through the webhook", () => {
+    const [event] = parseMessageEvents({
+      object: "instagram",
+      entry: [
+        {
+          id: "111",
+          messaging: [
+            {
+              sender: { id: "222" },
+              recipient: { id: "111" },
+              message: { mid: "m1", attachments: [{ type: "audio", payload: { url: "https://cdn.example/a.m4a" } }] },
+            },
+          ],
+        },
+      ],
+    } as never);
+    expect(event.attachmentType).toBe("audio");
+    expect(event.attachmentUrl).toBe("https://cdn.example/a.m4a");
   });
 });
