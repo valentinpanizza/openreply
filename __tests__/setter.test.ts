@@ -9,7 +9,7 @@ import { setterAllowsUser, setterAudios } from "../lib/setter/config";
 import { freeSlots, zonedToUtc, isValidTimeZone, withinOwnerHours } from "../lib/setter/calendar";
 import { costUsd } from "../lib/setter/budget";
 import { pageText } from "../lib/setter/context";
-import { buildTurnPrompt, type TurnInput } from "../lib/setter/brain";
+import { buildTurnPrompt, parseDecision, type TurnInput } from "../lib/setter/brain";
 import { parseEchoEvents, parseMessageEvents } from "../lib/meta/webhook";
 import { forbiddenOutput, looksLikeInjection } from "../lib/setter/guard";
 import { callPrepPrompt, type PrepInput } from "../lib/setter/prep";
@@ -320,5 +320,18 @@ describe("call prep", () => {
     expect(prompt).toContain("mensaje 299 ");
     expect(prompt).not.toContain("mensaje 0 ");
     expect(prompt).toMatch(/\(…\d+ mensajes anteriores\)/);
+  });
+});
+
+describe("handoff parsing", () => {
+  const input = { mode: "charla", phase: "agendando", notes: "", audios: [] } as unknown as TurnInput;
+  const handoff = (value: unknown) => parseDecision({ mensajes: ["hola"], pasar_a_humano: value }, input).handoff;
+
+  it("treats an empty-looking value as no handoff", () => {
+    for (const empty of ["", "  ", '""', "''", "-", "null", "…", undefined]) expect(handoff(empty)).toBeNull();
+  });
+
+  it("keeps a real reason", () => {
+    expect(handoff("insiste con el precio")).toBe("insiste con el precio");
   });
 });

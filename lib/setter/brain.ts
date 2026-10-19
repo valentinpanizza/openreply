@@ -262,7 +262,14 @@ export function buildTurnPrompt(input: TurnInput): string {
   ].join("\n\n");
 }
 
-function parseDecision(raw: unknown, input: TurnInput): TurnDecision {
+// The model sometimes writes "no handoff" as `""`, `-` or `null` instead of
+// leaving the field empty; that is not a reason to hand the chat over.
+function handoffReason(value: string): string | null {
+  if (!/[\p{L}\p{N}]/u.test(value)) return null;
+  return /^(null|none|n\/a|ninguno|nada|vac[ií]o)$/i.test(value) ? null : value;
+}
+
+export function parseDecision(raw: unknown, input: TurnInput): TurnDecision {
   const value = (raw ?? {}) as Record<string, unknown>;
   const text = (key: string) => (typeof value[key] === "string" ? (value[key] as string).trim() : "");
   // A message that is only a bracketed note ("[audio: pitch]") copies the
@@ -282,7 +289,7 @@ function parseDecision(raw: unknown, input: TurnInput): TurnDecision {
     phase: (PHASES as readonly string[]).includes(phase) ? phase : input.phase,
     notes: text("notas") || input.notes || "",
     timezone: text("zona_horaria") || null,
-    handoff: text("pasar_a_humano") || null,
+    handoff: handoffReason(text("pasar_a_humano")),
   };
 }
 
