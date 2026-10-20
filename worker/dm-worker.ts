@@ -3,6 +3,7 @@ import { recordWorkerHeartbeat } from "@/lib/ops/worker-health";
 import { reconcileComments } from "@/lib/polling/comment-reconciler";
 import { attachPendingNextReels } from "@/lib/automation/attach-next-reel";
 import { runTrialPublisher } from "@/lib/trials/publisher";
+import { runCarouselPublisher } from "@/lib/carousels/publisher";
 import { syncSetterEchoesFlag } from "@/lib/setter/engine";
 import os from "node:os";
 
@@ -74,11 +75,34 @@ async function trialTick() {
 
 const trialTimer = setInterval(() => void trialTick(), TRIAL_TICK_MS);
 
+// Finished carousels from the OpenCloud queue (CAROUSEL_PUBLISH_ENABLED), one
+// every few days. Same pace as the trials, on its own timer.
+let carouselRunning = false;
+
+async function carouselTick() {
+  if (carouselRunning) return;
+  carouselRunning = true;
+  try {
+    const result = await runCarouselPublisher();
+    if (result.status !== "disabled" && result.status !== "waiting") {
+      console.log("[DM Worker] Carousel publisher:", result);
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    console.error("[DM Worker] Carousel publisher failed:", message);
+  } finally {
+    carouselRunning = false;
+  }
+}
+
+const carouselTimer = setInterval(() => void carouselTick(), TRIAL_TICK_MS);
+
 async function shutdown(signal: string) {
   console.log(`[DM Worker] ${signal} received, closing worker`);
   clearInterval(heartbeatTimer);
   clearInterval(pollTimer);
   clearInterval(trialTimer);
+  clearInterval(carouselTimer);
   await worker.close();
   process.exit(0);
 }

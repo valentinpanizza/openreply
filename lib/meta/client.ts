@@ -933,6 +933,46 @@ export async function createReelContainer(
   return handleResponse(response);
 }
 
+/** One image of a carousel, as a container of its own (is_carousel_item). JPEG only. */
+export async function createCarouselItemContainer(
+  accessToken: string,
+  instagramAccountId: string,
+  imageUrl: string
+): Promise<{ id: string }> {
+  const response = await fetch(`${instagramGraphBase()}/${instagramAccountId}/media`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify({ image_url: imageUrl, is_carousel_item: true }),
+  });
+
+  return handleResponse(response);
+}
+
+/** The carousel post itself: its item containers, in order, and the caption. */
+export async function createCarouselContainer(
+  accessToken: string,
+  instagramAccountId: string,
+  options: { children: string[]; caption: string }
+): Promise<{ id: string }> {
+  const response = await fetch(`${instagramGraphBase()}/${instagramAccountId}/media`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify({
+      media_type: "CAROUSEL",
+      children: options.children.join(","),
+      caption: options.caption,
+    }),
+  });
+
+  return handleResponse(response);
+}
+
 /**
  * Processing state of a media container: IN_PROGRESS, FINISHED (ready to
  * publish), PUBLISHED, ERROR or EXPIRED. `status` explains an ERROR.
