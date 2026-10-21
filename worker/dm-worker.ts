@@ -5,6 +5,7 @@ import { attachPendingNextReels } from "@/lib/automation/attach-next-reel";
 import { runTrialPublisher } from "@/lib/trials/publisher";
 import { runCarouselPublisher } from "@/lib/carousels/publisher";
 import { syncSetterEchoesFlag } from "@/lib/setter/engine";
+import { pollSetterCommands } from "@/lib/setter/commands";
 import os from "node:os";
 
 const worker = createDMWorker();
@@ -97,12 +98,33 @@ async function carouselTick() {
 
 const carouselTimer = setInterval(() => void carouselTick(), TRIAL_TICK_MS);
 
+// The setter's buttons on the owner's phone (lib/setter/commands.ts): often,
+// so "callar" lands before the person writes again.
+const SETTER_COMMANDS_MS = 15_000;
+let commandsRunning = false;
+
+async function setterCommandsTick() {
+  if (commandsRunning) return;
+  commandsRunning = true;
+  try {
+    await pollSetterCommands();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    console.error("[DM Worker] Setter commands failed:", message);
+  } finally {
+    commandsRunning = false;
+  }
+}
+
+const setterCommandsTimer = setInterval(() => void setterCommandsTick(), SETTER_COMMANDS_MS);
+
 async function shutdown(signal: string) {
   console.log(`[DM Worker] ${signal} received, closing worker`);
   clearInterval(heartbeatTimer);
   clearInterval(pollTimer);
   clearInterval(trialTimer);
   clearInterval(carouselTimer);
+  clearInterval(setterCommandsTimer);
   await worker.close();
   process.exit(0);
 }

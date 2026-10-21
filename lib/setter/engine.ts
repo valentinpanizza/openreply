@@ -51,7 +51,7 @@ import { describeAttachment, humanize } from "./text";
 import { transcribeAudio } from "./transcribe";
 import { forbiddenOutput, looksLikeInjection } from "./guard";
 import { replyDelayMs, typingDelayMs } from "./timing";
-import { chatLink, notifyOwner } from "./notify";
+import { chatLink, notifyOwner, setterButtons } from "./notify";
 import { callPrepPrompt } from "./prep";
 
 /**
@@ -61,7 +61,8 @@ import { callPrepPrompt } from "./prep";
  *
  * Hooks into the DM worker at three points: a comment (the first message, as
  * the private reply), a DM from someone it is talking to (an answer, a little
- * later), and an echo of a message the owner wrote by hand (it steps aside).
+ * later), and an echo of a message the owner wrote by hand (it leaves that
+ * message to him and answers the person's next one, unless he silenced it).
  */
 
 const TRANSCRIPT_LIMIT = 40;
@@ -193,7 +194,7 @@ async function turnInput(
 function slotTools(conversation: Conversation, campaign: Awaited<ReturnType<typeof campaignFor>>, dryRun: boolean): TurnTools {
   return {
     async freeSlots(date, timeZone) {
-      if (!calendarConfigured()) return "el calendario no está conectado: pasale la charla a valentín.";
+      if (!calendarConfigured()) return "el calendario no está conectado: usá pasar_a_humano.";
       if (!isValidTimeZone(timeZone)) return `zona horaria inválida: ${timeZone}`;
       if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return "la fecha tiene que ser YYYY-MM-DD";
       const slots = await freeSlotsOn(date, timeZone, callMinutes());
@@ -202,19 +203,19 @@ function slotTools(conversation: Conversation, campaign: Awaited<ReturnType<type
       return `horarios libres el ${date} (hora de la persona, ${timeZone}): ${slots.map((s) => fmt.format(s)).join(", ")}`;
     },
     async book(args) {
-      if (!calendarConfigured()) return "el calendario no está conectado: pasale la charla a valentín.";
+      if (!calendarConfigured()) return "el calendario no está conectado: usá pasar_a_humano.";
       if (!isValidTimeZone(args.zona_horaria)) return `zona horaria inválida: ${args.zona_horaria}`;
       const match = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})$/.exec(args.inicio);
       if (!match) return "el inicio tiene que ser YYYY-MM-DDTHH:MM";
       const email = args.email.trim().toLowerCase();
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return `ese mail no parece válido: ${args.email}`;
       if (conversation.callAt && conversation.callAt.getTime() > Date.now()) {
-        return `ya tiene una llamada ${describeCall(conversation)}. si la quiere cambiar, pasale la charla a valentín.`;
+        return `ya tiene una llamada ${describeCall(conversation)}. si la quiere cambiar, usá pasar_a_humano.`;
       }
       const start = zonedToUtc(match[1], Number(match[2]), Number(match[3]), args.zona_horaria);
       if (start.getTime() < Date.now() + 60 * 60_000) return "ese horario ya pasó o es muy pronto: ofrecé otro.";
       if (!withinOwnerHours(start, callMinutes())) {
-        return "ese horario no le sirve a valentín: ofrecé uno de los que da ver_horarios.";
+        return "ese horario no te sirve: ofrecé uno de los que da ver_horarios.";
       }
       const end = new Date(start.getTime() + callMinutes() * 60_000);
       if ((await busyBetween(start, end)).length > 0) return "ese horario ya no está libre: ofrecé otro.";
@@ -377,7 +378,7 @@ export async function setterOpening({
   let conversationId: string | null = null;
   try {
     existing = await prisma.setterConversation.findUnique({ where: { instagramAccountId_userId: key } });
-    if (existing?.status === "HUMAN") return { kind: "owner" };
+    if (existing && existing.status !== "ACTIVE") return { kind: "owner" };
     if (!(await budgetLeft())) return null;
 
     const conversation = await prisma.setterConversation.upsert({
@@ -578,7 +579,39 @@ async function handOver(conversation: Conversation, reason: string): Promise<voi
     message: reason,
     tags: ["raising_hand"],
     click: chatLink(conversation.username),
+    actions: setterButtons(conversation.id),
   });
+}
+
+/** The owner does not want the setter with this person: quiet for good. */
+export async function silenceSetter(conversation: Conversation, reason: string): Promise<void> {
+  await prisma.setterConversation.update({
+    where: { id: conversation.id },
+    data: { status: "STOPPED", statusReason: reason },
+  });
+  await getRedisConnection().del(tokenKey(conversation.id));
+}
+
+/**
+ * The setter takes the conversation back. If the person's last message is
+ * still unanswered, it answers it now; otherwise it waits for the next one.
+ */
+export async function resumeSetter(conversation: Conversation): Promise<void> {
+  await prisma.setterConversation.update({
+    where: { id: conversation.id },
+    data: { status: "ACTIVE", statusReason: null },
+  });
+  const last = await prisma.setterMessage.findFirst({
+    where: { conversationId: conversation.id, role: { in: ["user", "bot", "owner"] } },
+    orderBy: { createdAt: "desc" },
+  });
+  if (last?.role !== "user") return;
+  const account = await prisma.instagramAccount.findUnique({
+    where: { id: conversation.instagramAccountId },
+    select: { instagramId: true },
+  });
+  if (!account) return;
+  await scheduleReply(conversation, { instagramAccountId: account.instagramId }, last.mid ?? last.id, 5_000);
 }
 
 async function stillCurrent(conversationId: string, token: string): Promise<boolean> {
@@ -813,10 +846,12 @@ export async function processSetterEcho(job: Job<SetterEchoJob>): Promise<void> 
     if (typeof error === "object" && error && "code" in error && error.code === "P2002") return;
     throw error;
   }
-  if (conversation.status === "ACTIVE") {
+  // He answered by hand: what he answered is his (a reply the setter was about
+  // to send goes away), and the person's next message is the setter's again.
+  if (conversation.status !== "STOPPED") {
     await prisma.setterConversation.update({
       where: { id: conversation.id },
-      data: { status: "HUMAN", statusReason: "Escribiste vos en la charla" },
+      data: { status: "ACTIVE", statusReason: null, lastBotAt: new Date() },
     });
     await getRedisConnection().del(tokenKey(conversation.id));
   }

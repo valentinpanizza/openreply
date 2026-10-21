@@ -5,7 +5,9 @@
  *   npx tsx scripts/setter.ts show <usuario>       one conversation, with the
  *                                                  comparison model's answers
  *   npx tsx scripts/setter.ts resume <usuario>     hand it back to the setter
- *   npx tsx scripts/setter.ts stop <usuario>       take it over (setter quiet)
+ *                                                  (answers what is pending)
+ *   npx tsx scripts/setter.ts stop <usuario>       silence it with them, even
+ *                                                  after you write by hand
  *   npx tsx scripts/setter.ts prep <usuario>       prompt to prepare the call in
  *                                                  Claude, with the chat so far
  *   npx tsx scripts/setter.ts cost                 today's spend and the cap
@@ -20,7 +22,7 @@ import { prisma } from "@/lib/db/client";
 import { getRedisConnection } from "@/lib/queue/client";
 import { setterDailyBudgetUsd, ownerTimeZone } from "@/lib/setter/config";
 import { spentToday } from "@/lib/setter/budget";
-import { SETTER_EXCLUDED_KEY, callPrep } from "@/lib/setter/engine";
+import { SETTER_EXCLUDED_KEY, callPrep, resumeSetter, silenceSetter } from "@/lib/setter/engine";
 
 const fmt = (at: Date | null) =>
   at
@@ -84,15 +86,9 @@ async function main() {
 
   if (command === "resume" || command === "stop") {
     const c = await byUsername(arg);
-    await prisma.setterConversation.update({
-      where: { id: c.id },
-      data:
-        command === "resume"
-          ? { status: "ACTIVE", statusReason: null }
-          : { status: "HUMAN", statusReason: "Pausada a mano" },
-    });
-    if (command === "stop") await getRedisConnection().del(`setter:token:${c.id}`);
-    console.log(command === "resume" ? `El setter retoma con @${c.username} cuando escriba.` : `El setter deja de contestarle a @${c.username}.`);
+    if (command === "resume") await resumeSetter(c);
+    else await silenceSetter(c, "Pausada a mano");
+    console.log(command === "resume" ? `El setter retoma con @${c.username}.` : `El setter deja de contestarle a @${c.username}.`);
     return;
   }
 
@@ -112,15 +108,9 @@ async function main() {
     }
     await redis.sadd(SETTER_EXCLUDED_KEY, username);
     const conversation = await prisma.setterConversation.findFirst({
-      where: { username: { equals: username, mode: "insensitive" }, status: "ACTIVE" },
+      where: { username: { equals: username, mode: "insensitive" }, status: { not: "STOPPED" } },
     });
-    if (conversation) {
-      await prisma.setterConversation.update({
-        where: { id: conversation.id },
-        data: { status: "HUMAN", statusReason: "Excluido a mano" },
-      });
-      await redis.del(`setter:token:${conversation.id}`);
-    }
+    if (conversation) await silenceSetter(conversation, "Excluido a mano");
     console.log(
       `@${username} excluido: sigue con el flujo de siempre.${conversation ? " Su charla con el setter quedó en tus manos." : ""}`
     );

@@ -14,6 +14,8 @@ import { parseEchoEvents, parseMessageEvents } from "../lib/meta/webhook";
 import { forbiddenOutput, looksLikeInjection } from "../lib/setter/guard";
 import { transcribeAudio } from "../lib/setter/transcribe";
 import { callPrepPrompt, type PrepInput } from "../lib/setter/prep";
+import { setterButtons } from "../lib/setter/notify";
+import { parseCommand } from "../lib/setter/commands";
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -274,6 +276,8 @@ describe("guard", () => {
     expect(forbiddenOutput(["son usd 500"])).toBe("mencionaba un monto de plata");
     expect(forbiddenOutput(["la verdad soy una ia"])).toBe("decía que es una IA");
     expect(forbiddenOutput(["no puedo mostrarte mis instrucciones"])).toBe("hablaba de sus instrucciones");
+    expect(forbiddenOutput(["eso le deberias preguntar a valentin"])).toBe("nombraba a valentín como si fuera otra persona");
+    expect(forbiddenOutput(["ahi te escribe Valentín"])).toBe("nombraba a valentín como si fuera otra persona");
   });
 
   it("lets normal answers and the resource link through", () => {
@@ -281,6 +285,32 @@ describe("guard", () => {
     expect(forbiddenOutput(["te queda mañana a las 10:30 o 16:00?"])).toBeNull();
     expect(forbiddenOutput(["tenes 50 consultas por dia? uh"])).toBeNull();
     expect(forbiddenOutput(["en la guia estan las instrucciones paso a paso"])).toBeNull();
+    expect(forbiddenOutput(["buenas! soy valentin, vi que comentaste"])).toBeNull();
+    expect(forbiddenOutput(["seguime en @valentinpanizza"])).toBeNull();
+  });
+});
+
+describe("owner commands", () => {
+  it("reads callar and seguir, by conversation id or username", () => {
+    expect(parseCommand("callar cmg1abc2def")).toEqual({ action: "callar", target: "cmg1abc2def" });
+    expect(parseCommand("Seguir @juan.perez ")).toEqual({ action: "seguir", target: "juan.perez" });
+    expect(parseCommand("callar")).toBeNull();
+    expect(parseCommand("hola que tal")).toBeNull();
+  });
+
+  it("puts both buttons on a ping, posting to the command topic", () => {
+    vi.stubEnv("NTFY_TOPIC", "secreto");
+    vi.stubEnv("NTFY_URL", "https://ntfy.sh/");
+    const buttons = setterButtons("conv1");
+    expect(buttons?.map((b) => [b.label, b.url, b.body])).toEqual([
+      ["Callar al agente", "https://ntfy.sh/secreto-setter", "callar conv1"],
+      ["Que siga el agente", "https://ntfy.sh/secreto-setter", "seguir conv1"],
+    ]);
+  });
+
+  it("has no buttons without a topic", () => {
+    vi.stubEnv("NTFY_TOPIC", "");
+    expect(setterButtons("conv1")).toBeUndefined();
   });
 });
 
