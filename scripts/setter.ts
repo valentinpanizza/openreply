@@ -10,6 +10,13 @@
  *                                                  after you write by hand
  *   npx tsx scripts/setter.ts prep <usuario>       prompt to prepare the call in
  *                                                  Claude, with the chat so far
+ *   npx tsx scripts/setter.ts rescue [--go]        conversations handed over
+ *                                                  because Instagram capped the
+ *                                                  sends (368), still waiting
+ *                                                  for an answer: lists them, and
+ *                                                  with --go the setter takes
+ *                                                  them back (they go out one at
+ *                                                  a time)
  *   npx tsx scripts/setter.ts cost                 today's spend and the cap
  *   npx tsx scripts/setter.ts exclude <usuario>    never use the setter with them
  *   npx tsx scripts/setter.ts include <usuario>    undo that
@@ -92,6 +99,33 @@ async function main() {
     return;
   }
 
+  if (command === "rescue") {
+    const go = arg === "--go";
+    // Instagram takes an answer only within 24 h of the person's message.
+    const rows = await prisma.setterConversation.findMany({
+      where: {
+        status: "HUMAN",
+        statusReason: { contains: "code=368" },
+        lastUserAt: { gte: new Date(Date.now() - 22 * 3600_000) },
+      },
+      orderBy: { lastUserAt: "asc" },
+    });
+    let count = 0;
+    for (const c of rows) {
+      const last = await prisma.setterMessage.findFirst({
+        where: { conversationId: c.id, role: { in: ["user", "bot", "owner"] } },
+        orderBy: { createdAt: "desc" },
+      });
+      // Already answered, by the setter or by hand.
+      if (last?.role !== "user") continue;
+      count++;
+      console.log(`${fmt(last.createdAt)}  @${c.username ?? c.userId}: ${last.text.slice(0, 70)}`);
+      if (go) await resumeSetter(c);
+    }
+    console.log(go ? `\n${count} charlas retomadas: salen de a una.` : `\n${count} para retomar (rescue --go para hacerlo).`);
+    return;
+  }
+
   if (command === "cost") {
     console.log(`Hoy: US$ ${(await spentToday()).toFixed(4)} de US$ ${setterDailyBudgetUsd().toFixed(2)}`);
     return;
@@ -142,7 +176,7 @@ async function main() {
   }
 
   console.log(
-    "Comandos: list, show <usuario>, prep <usuario>, resume <usuario>, stop <usuario>, cost, exclude <usuario>, include <usuario>, excluded, context <campaña> [texto]"
+    "Comandos: list, show <usuario>, prep <usuario>, resume <usuario>, stop <usuario>, rescue [--go], cost, exclude <usuario>, include <usuario>, excluded, context <campaña> [texto]"
   );
 }
 

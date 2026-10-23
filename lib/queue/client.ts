@@ -115,6 +115,10 @@ export interface SetterReplyJob {
   token: string;
   // Set on a retry after a failed answer, or a wait for the previous one.
   retry?: number;
+  // Set when it waited for its turn to send (see setter/pacing.ts): the moment
+  // it was given, and how many times it has waited.
+  slotAt?: number;
+  waits?: number;
 }
 
 // A message the connected account sent (an echo). One the setter did not send

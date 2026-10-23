@@ -51,6 +51,7 @@ import { describeAttachment, humanize } from "./text";
 import { transcribeAudio } from "./transcribe";
 import { forbiddenOutput, looksLikeInjection } from "./guard";
 import { replyDelayMs, typingDelayMs } from "./timing";
+import { isRateLimited, pauseSending, pausedUntil, rateLimitPauseMs, reserveSlot, withinReplyWindow } from "./pacing";
 import { chatLink, notifyOwner, setterButtons } from "./notify";
 import { callPrepPrompt } from "./prep";
 
@@ -486,7 +487,8 @@ async function scheduleReply(
   data: { instagramAccountId: string; accountConnectionId?: string },
   token: string,
   delay: number,
-  retry = 0
+  retry = 0,
+  wait?: { slotAt: number; waits: number }
 ) {
   await getRedisConnection().set(tokenKey(conversation.id), token, "EX", 24 * 3600);
   await getDMQueue().add(
@@ -497,10 +499,11 @@ async function scheduleReply(
       conversationId: conversation.id,
       token,
       ...(retry ? { retry } : {}),
+      ...(wait ?? {}),
     },
     {
       delay,
-      jobId: `setter_reply_${conversation.id}_${Buffer.from(token).toString("base64url")}_${retry}`,
+      jobId: `setter_reply_${conversation.id}_${Buffer.from(token).toString("base64url")}_${retry}${wait ? `_w${wait.waits}` : ""}`,
       attempts: 1,
       removeOnComplete: true,
       removeOnFail: { age: 3600 },
@@ -639,6 +642,29 @@ async function stillCurrent(conversationId: string, token: string): Promise<bool
   return current === token && conversation?.status === "ACTIVE";
 }
 
+/**
+ * Puts the answer off until `slotAt`, its turn to send (see pacing.ts). Past
+ * Instagram's 24 h window it can no longer go, and the owner takes it.
+ */
+async function waitForTurn(
+  conversation: Conversation,
+  data: SetterReplyJob,
+  token: string,
+  slotAt: number
+): Promise<void> {
+  if (!withinReplyWindow(conversation.lastUserAt, slotAt)) {
+    await handOver(
+      conversation,
+      "Instagram frenó los envíos del setter (límite de frecuencia) y su mensaje ya está por pasar las 24 h: contestale vos."
+    );
+    return;
+  }
+  await scheduleReply(conversation, data, token, Math.max(0, slotAt - Date.now()), data.retry ?? 0, {
+    slotAt,
+    waits: (data.waits ?? 0) + 1,
+  });
+}
+
 // A message that only introduced the link ("dale, aca lo tenes:"), left
 // empty when the link can't go.
 const LINK_INTRO_ONLY = /^[\w\s,]*(aca|acá|ahi|ahí)\s+(te\s+)?(lo|la)\s+ten[eé]s:?$/i;
@@ -688,6 +714,18 @@ export async function processSetterReply(job: Job<SetterReplyJob>): Promise<void
     if (!(await stillCurrent(conversationId, token))) return;
     conversation = await prisma.setterConversation.findUnique({ where: { id: conversationId } });
     if (!conversation) return;
+
+    // Its turn to send: right away, unless Instagram has the setter paused or
+    // another answer just went out. One that already waited keeps its turn.
+    const instagramId = job.data.instagramAccountId;
+    if (!job.data.slotAt || (await pausedUntil(instagramId)) > Date.now()) {
+      const slotAt = await reserveSlot(instagramId);
+      if (slotAt > Date.now() + 1000) {
+        await waitForTurn(conversation, job.data, token, slotAt);
+        return;
+      }
+    }
+
     if (!(await budgetLeft())) {
       await handOver(conversation, "Se terminó el presupuesto diario del setter (SETTER_DAILY_BUDGET_USD).");
       return;
@@ -807,7 +845,23 @@ export async function processSetterReply(job: Job<SetterReplyJob>): Promise<void
   } catch (error) {
     console.error("[Setter] Reply failed:", formatError(error));
     const retry = job.data.retry ?? 0;
-    if (!sentSomething && retry < 2 && conversation && (await stillCurrent(conversationId, token))) {
+    if (isRateLimited(error) && conversation) {
+      // Instagram's cap on sends: pause, and answer again after the pause
+      // instead of handing the conversation over.
+      const instagramId = job.data.instagramAccountId;
+      if (await pauseSending(instagramId)) {
+        await notifyOwner({
+          title: "Instagram frenó al setter",
+          message: `Límite de frecuencia (368). Pausa de ${Math.round(rateLimitPauseMs() / 60_000)} min: las respuestas esperan y después salen de a una.`,
+          tags: ["hourglass"],
+        });
+      }
+      if (sentSomething) {
+        await handOver(conversation, `Instagram cortó la respuesta del setter a la mitad: fijate cómo quedó y seguí vos. ${formatError(error)}`);
+      } else if (await stillCurrent(conversationId, token)) {
+        await waitForTurn(conversation, job.data, token, await reserveSlot(instagramId));
+      }
+    } else if (!sentSomething && retry < 2 && conversation && (await stillCurrent(conversationId, token))) {
       await scheduleReply(conversation, job.data, token, 30_000 * (retry + 1), retry + 1);
     } else if (conversation) {
       await handOver(conversation, `El setter falló al contestar: ${formatError(error)}`);

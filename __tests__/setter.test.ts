@@ -16,6 +16,8 @@ import { transcribeAudio } from "../lib/setter/transcribe";
 import { callPrepPrompt, type PrepInput } from "../lib/setter/prep";
 import { setterButtons } from "../lib/setter/notify";
 import { parseCommand } from "../lib/setter/commands";
+import { isRateLimited, rateLimitPauseMs, replySpacingMs, withinReplyWindow } from "../lib/setter/pacing";
+import { sendDirectMessage } from "../lib/meta/client";
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -420,5 +422,42 @@ describe("voice notes", () => {
     } as never);
     expect(event.attachmentType).toBe("audio");
     expect(event.attachmentUrl).toBe("https://cdn.example/a.m4a");
+  });
+});
+
+describe("send cap", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("tells Instagram's cap on sends (368) apart from other failures, as the real client throws them", async () => {
+    const graphError = (code: number, subcode: number) =>
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 400,
+        url: "https://graph.instagram.com/v25.0/ig_1/messages",
+        json: async () => ({
+          error: { code, error_subcode: subcode, message: "Limitamos la frecuencia", type: "OAuthException" },
+        }),
+      });
+    vi.stubGlobal("fetch", graphError(368, 1390008));
+    expect(isRateLimited(await sendDirectMessage("token", "ig_1", "user_1", "hola").catch((e) => e))).toBe(true);
+    vi.stubGlobal("fetch", graphError(10, 2534022));
+    expect(isRateLimited(await sendDirectMessage("token", "ig_1", "user_1", "hola").catch((e) => e))).toBe(false);
+    expect(isRateLimited(new Error("boom"))).toBe(false);
+  });
+
+  it("pauses 30 min and spaces answers 20 s unless told otherwise", () => {
+    expect(rateLimitPauseMs()).toBe(30 * 60_000);
+    expect(replySpacingMs()).toBe(20_000);
+    vi.stubEnv("SETTER_RATE_LIMIT_PAUSE_MINUTES", "60");
+    vi.stubEnv("SETTER_REPLY_SPACING_SECONDS", "0");
+    expect(rateLimitPauseMs()).toBe(60 * 60_000);
+    expect(replySpacingMs()).toBe(0);
+  });
+
+  it("only waits while the answer still fits in Instagram's 24 h window", () => {
+    const now = Date.parse("2026-10-23T18:00:00Z");
+    expect(withinReplyWindow(new Date(now - 3600_000), now)).toBe(true);
+    expect(withinReplyWindow(new Date(now - 23 * 3600_000), now)).toBe(false);
+    expect(withinReplyWindow(null, now)).toBe(false);
   });
 });
