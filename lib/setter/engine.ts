@@ -165,6 +165,23 @@ function describeCall(conversation: Conversation): string | null {
     : `fue el ${when}`;
 }
 
+/**
+ * Whether the person already got this campaign's resource (the reveal row,
+ * also written by the button flows). Per campaign: someone who got another
+ * reel's resource still gets this one.
+ */
+async function resourceSentFor(
+  conversation: Conversation,
+  campaign: Awaited<ReturnType<typeof campaignFor>>
+): Promise<boolean> {
+  if (!campaign) return Boolean(conversation.resourceSentAt);
+  const row = await prisma.dmLog.findUnique({
+    where: { automationId_commentId: { automationId: campaign.id, commentId: `reveal:${conversation.userId}` } },
+    select: { status: true },
+  });
+  return row?.status === "SENT";
+}
+
 async function turnInput(
   mode: TurnInput["mode"],
   conversation: Conversation,
@@ -179,7 +196,7 @@ async function turnInput(
     notes: conversation.notes,
     timezone: conversation.timezone,
     email: conversation.email,
-    resourceSent: Boolean(conversation.resourceSentAt),
+    resourceSent: await resourceSentFor(conversation, campaign),
     resourceAvailable: Boolean(campaign?.trackedLinks.length),
     call: describeCall(conversation),
     audios: mode === "charla" ? await audiosLeft(conversation.id) : [],
@@ -622,15 +639,23 @@ async function stillCurrent(conversationId: string, token: string): Promise<bool
   return current === token && conversation?.status === "ACTIVE";
 }
 
+// A message that only introduced the link ("dale, aca lo tenes:"), left
+// empty when the link can't go.
+const LINK_INTRO_ONLY = /^[\w\s,]*(aca|acá|ahi|ahí)\s+(te\s+)?(lo|la)\s+ten[eé]s:?$/i;
+
 function resourceMessages(
   decision: TurnDecision,
-  campaign: Awaited<ReturnType<typeof campaignFor>>,
-  alreadySent: boolean
+  campaign: Awaited<ReturnType<typeof campaignFor>>
 ): { messages: string[]; sentResource: boolean } {
-  const canSend = decision.sendResource && !alreadySent && Boolean(campaign?.trackedLinks.length);
   let messages = decision.messages.map(humanize);
+  // Writing {link} is asking for it too: sent again if they ask again, since
+  // the turn input already told the model it was sent.
+  const wantsLink = decision.sendResource || messages.some((m) => /\{link\}/i.test(m));
+  const canSend = wantsLink && Boolean(campaign?.trackedLinks.length);
   if (!canSend) {
-    messages = messages.map((m) => m.replace(/\s*\{link\}/gi, "").trim()).filter(Boolean);
+    messages = messages
+      .map((m) => m.replace(/\s*\{link\}/gi, "").trim())
+      .filter((m) => m && !LINK_INTRO_ONLY.test(m));
     return { messages, sentResource: false };
   }
   if (!messages.some((m) => /\{link\}/i.test(m))) messages.push("aca lo tenes: {link}");
@@ -681,7 +706,7 @@ export async function processSetterReply(job: Job<SetterReplyJob>): Promise<void
     // the newer job answers instead. A booking made meanwhile is already saved.
     if (!(await stillCurrent(conversationId, token))) return;
 
-    const { messages, sentResource } = resourceMessages(decision, campaign, Boolean(conversation.resourceSentAt));
+    const { messages, sentResource } = resourceMessages(decision, campaign);
     const blocked = forbiddenOutput(messages);
     if (blocked) {
       await prisma.setterConversation.update({
