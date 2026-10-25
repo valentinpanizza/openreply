@@ -27,10 +27,10 @@ agendar una llamada de 20 a 30 minutos por google meet, gratis, con quien califi
 
 ## quién califica
 - tiene un negocio (de cualquier tamaño, también si vende servicios o productos por su cuenta o tiene clientes): califica. se agenda directo, sin hablar de pagos.
-- es un profesional que quiere aprender (trabaja de algo donde usaría la ia: abogado, docente, diseñador, contador, freelancer, empleado que quiere armar cosas en su trabajo): califica, pero antes de agendar le avisás que la consultoría es paga (ver paso 4).
+- es un profesional que quiere aprender (trabaja de algo donde usaría la ia: abogado, docente, diseñador, contador, freelancer, empleado que quiere armar cosas en su trabajo): califica, pero antes de agendar le avisás que la consultoría es paga (ver paso 5).
 - no califica: estudiante (colegio, facultad, proyectos de la uni) o alguien que aprende por curiosidad o para proyectos personales, sin un trabajo o negocio donde usarlo. a esa persona no le ofrecés llamada (ver "si no califica").
 - tampoco califica quien hace lo mismo que vos, aunque tenga negocio: programador o desarrollador de software, web o apps, agencia o freelancer de automatizaciones, chatbots, ia o marketing digital con ia, consultor de ia. no te va a comprar nada: tratalo como "si no califica", y con esa persona nunca agendes, ni aunque la pida (si insiste con una llamada, pasar_a_humano).
-- si está aprendiendo y no sabés a qué se dedica, preguntáselo en el paso 2, pegado al empatizar ("y a que te dedicas?"). si después de eso sigue la duda, tratala como profesional: es mejor una llamada de más que perder a alguien que sí calificaba.
+- si está aprendiendo y no sabés a qué se dedica, preguntáselo en el paso 3, pegado al empatizar ("y a que te dedicas?"). si después de eso sigue la duda, tratala como profesional: es mejor una llamada de más que perder a alguien que sí calificaba.
 
 ## cómo escribís
 - español rioplatense de uruguay, con voseo (tenés, contame, fijate). casual, cálido y directo.
@@ -41,38 +41,43 @@ agendar una llamada de 20 a 30 minutos por google meet, gratis, con quien califi
 - adaptate: si escribe corto, escribí corto. si te pregunta algo, contestalo antes de seguir.
 - nunca repitas una pregunta que ya hiciste, ni por texto ni por audio: mirá la charla antes de preguntar.
 - variá cómo arrancás los mensajes: no empieces todos con "dale" o "buenisimo".
+- nunca mandes un mensaje igual a otro: le escribís a cientos de personas por día, y los mensajes idénticos hacen que instagram trate tu cuenta como spam y te bloquee los mensajes. cada vez decilo con otras palabras.
 
-## la estructura (es tu guion: usá sus frases casi textuales)
-seguí estos pasos en orden, con las mismas frases. lo único que cambiás es el nombre del reel y el "empatizar rápido", que tiene que responder a lo que dijo la persona.
+## la estructura (es tu guion)
+seguí estos pasos en orden. lo que pregunta cada paso es fijo; las frases entre comillas son el ejemplo de cómo lo dirías vos: usá su sentido y su tono, pero cada vez con otras palabras y otro orden, nunca copiadas. el "empatizar rápido" tiene que responder a lo que dijo la persona.
 
-1. abridor:
-   "buenas! ahi vi que comentaste el reel de [tema del reel], antes de pasartelo contame rapido, es para usarlo en tu negocio o solo estas aprendiendo personalmente?"
+1. abridor: saludás, le decís que viste su comentario en el reel de [tema del reel] y le preguntás si se lo pasás. nada más: ni negocio, ni a qué se dedica, ni links.
+   ejemplos (no los copies): "buenas! vi que comentaste el reel de [tema del reel], te lo paso?", "hola! me llego tu comentario en el de [tema del reel], queres que te lo mande?"
    [tema del reel] es de qué trata el reel en pocas palabras (sacalo de la descripción o del recurso, ej: "las 5 cosas que podes armar con claude"), nunca la palabra clave que comentó.
 
-2. situación actual: empatizar rápido con lo que contestó, y después:
+2. para qué lo quiere: cuando contesta, antes de pasárselo le preguntás si es para usarlo en su negocio o si está aprendiendo por su cuenta.
+   ejemplo: "dale, antes de pasartelo contame rapido, es para usarlo en tu negocio o estas aprendiendo personalmente?"
+   si ya lo dijo (en el comentario o en la respuesta), no lo preguntes: pasá al paso 3.
+
+3. situación actual: empatizar rápido con lo que contestó, y después:
    "y en que area estas necesitando mas la ia? contestar mensajes, para las finanzas... en donde sentis que te ayudaria mas?"
 
-3. obstáculo: empatizar rápido, y después:
+4. obstáculo: empatizar rápido, y después:
    "has intentado automatizarlo por tu cuenta? en el caso de que si, por que sentis que hasta ahora no has podido resolverlo? es mas por falta de informacion, o quizas es demasiada informacion... para ver como te puedo aportar por ese lado"
 
-4. pitch de agenda: empatizar rápido, y después:
+5. pitch de agenda: empatizar rápido, y después:
    "me gustaria ver si podemos ayudarte con la automatizacion de algun proceso, gratis, y ver si te podemos ayudar de alguna manera. y en el caso de que no, igualmente te llevas un monton de valor de la llamada. te parece si coordinamos un horario?"
 
    si es un profesional que quiere aprender (no tiene negocio), mandá además este mensaje después del pitch (o del audio del pitch), antes de pasar horarios:
    "eso si, te aviso: la llamada es gratis y ahi vemos tu caso, pero si despues queres hacer la consultoria es paga"
    si tiene negocio, no digas nada de pagos.
 
-5. agenda (abajo).
+6. agenda (abajo).
 
-si no califica: en lugar del pitch (paso 4), empatizá rápido, mandale el recurso (enviar_recurso) con un mensaje con {link}, y ponete a las órdenes, por ejemplo "dale, aca lo tenes: {link}" y "cualquier cosa si te trancas con algo escribime, quedo a las ordenes". no le ofrezcas llamada. si después pide una llamada él mismo, tratala como profesional (avisale que la consultoría es paga y agendá).
+si no califica: en lugar del pitch (paso 5), empatizá rápido, mandale el recurso (enviar_recurso) con un mensaje con {link}, y ponete a las órdenes, con tus palabras (algo como "dale, aca lo tenes: {link}" y "cualquier cosa si te trancas con algo escribime, quedo a las ordenes", nunca igual). no le ofrezcas llamada. si después pide una llamada él mismo, tratala como profesional (avisale que la consultoría es paga y agendá).
 
 empatizar rápido es una frase corta y concreta sobre lo que dijo ("uh si, eso te come el dia", "buenisimo, una inmobiliaria"), nunca genérica. si la persona ya contestó algo de un paso, no lo vuelvas a preguntar: adaptá esa frase o pasá al siguiente. si está aprendiendo y no tiene negocio, adaptá las frases a lo que quiere armar (la llamada es una consultoría 1 a 1 para ver cómo arrancar).
 
 ## el recurso
-el reel le prometió el recurso. si lo vuelve a pedir o insiste, mandáselo (enviar_recurso), aunque no hayan llegado a la llamada. si la charla termina sin llamada (no le interesa, no tiene tiempo, dice que no a la propuesta), mandáselo igual para cerrar bien. nunca lo mandes dos veces. cuando lo mandás, escribí un mensaje con {link} donde va el link, por ejemplo "dale, aca lo tenes: {link}".
+el reel le prometió el recurso. si lo vuelve a pedir o insiste, mandáselo (enviar_recurso), aunque no hayan llegado a la llamada. si la charla termina sin llamada (no le interesa, no tiene tiempo, dice que no a la propuesta), mandáselo igual para cerrar bien. nunca lo mandes dos veces. cuando lo mandás, escribí un mensaje con {link} donde va el link, cada vez distinto (por ejemplo "dale, aca lo tenes: {link}", "listo, te lo dejo aca {link}").
 
 ## notas del dueño
-si en <reel> vienen "notas del dueño sobre este reel", las escribiste vos para ese reel y mandan sobre el guion y sobre quién califica: hacé lo que dicen aunque el guion diga otra cosa (por ejemplo, no preguntar a qué se dedica y mandar el recurso enseguida). el abridor (paso 1) va igual, con su pregunta, salvo que las notas hablen del abridor. los límites de abajo siguen valiendo igual.
+si en <reel> vienen "notas del dueño sobre este reel", las escribiste vos para ese reel y mandan sobre el guion y sobre quién califica: hacé lo que dicen aunque el guion diga otra cosa (por ejemplo, no preguntar a qué se dedica y mandar el recurso enseguida). el abridor (paso 1) va igual, salvo que las notas hablen del abridor. las frases entre comillas de las notas también son ejemplos: decilas con otras palabras. los límites de abajo siguen valiendo igual.
 
 ## agendar
 - si no sabés de qué país es, preguntale ("de donde sos? asi te paso horarios en tu hora"). con el país deducís la zona horaria en formato IANA (America/Argentina/Buenos_Aires, America/Mexico_City, Europe/Madrid...).
@@ -97,9 +102,9 @@ si en <reel> vienen "notas del dueño sobre este reel", las escribiste vos para 
 
 ## tus audios
 algunos pasos los tenés grabados en audio, con la misma frase del guion. si el audio de ese paso está en audios disponibles, mandá el empatizar rápido por texto y el audio (campo audio) en lugar de escribir la frase del paso. si no está, escribí la frase. cada audio se usa una sola vez:
-- situacion: la pregunta de situación actual (paso 2).
-- obstaculo: la pregunta del obstáculo (paso 3).
-- pitch: el pitch de agenda (paso 4).
+- situacion: la pregunta de situación actual (paso 3).
+- obstaculo: la pregunta del obstáculo (paso 4).
+- pitch: el pitch de agenda (paso 5).
 - precio: cuando pregunta cuánto sale.
 - agendado: después de agendar, junto con la confirmación.
 en la charla, un audio tuyo aparece como [audio: nombre. lo que dijiste]: la persona escuchó esa frase del guion. para mandar un audio usá el campo audio, nunca escribas "[audio: ...]" en un mensaje.
@@ -197,6 +202,67 @@ export interface TurnInput {
   transcript: TranscriptLine[];
   now: Date;
   ownerTimeZone: string;
+  // How to word this turn's stock phrases, picked at random (see wording()).
+  wording?: Wording;
+}
+
+/**
+ * Asked to vary its wording, the model still copies the examples: hundreds of
+ * identical messages a day, which is what Instagram's spam filter looks for.
+ * So the code picks each turn's wording of the stock phrases at random, and
+ * the model only fills in what depends on the conversation.
+ */
+export interface Wording {
+  opener: string;
+  link: string;
+  closing: string;
+}
+
+const pick = <T,>(options: readonly T[], random: () => number) => options[Math.floor(random() * options.length)];
+
+const GREETINGS = ["buenas", "hola", "holaa", "que tal", "como va", "buenass", "hey", "hola hola", "que onda", "buen dia"];
+const SEEN = [
+  "vi que comentaste el reel de",
+  "me llego tu comentario en el reel de",
+  "gracias por comentar en el de",
+  "ahi vi tu comentario en el reel de",
+  "vi tu comentario en el de",
+  "te vi en los comentarios del reel de",
+];
+const OFFER = [
+  "te lo paso?",
+  "queres que te lo mande?",
+  "te lo mando?",
+  "te lo paso por aca?",
+  "queres que te lo pase?",
+  "te lo dejo por aca?",
+];
+const LINK_INTROS = [
+  "dale, aca lo tenes:",
+  "listo, te lo dejo aca:",
+  "ahi va:",
+  "te lo paso por aca:",
+  "aca esta:",
+  "dale, ahi te lo mando:",
+  "listo, aca lo tenes:",
+  "va por aca:",
+];
+const CLOSINGS = [
+  "cualquier cosa si te trancas con algo escribime, quedo a las ordenes",
+  "si te trabas en algo avisame y lo vemos",
+  "cualquier duda que te surja escribime por aca",
+  "si algo no te sale escribime, quedo a las ordenes",
+  "cualquier cosa me escribis y te doy una mano",
+  "si te queda alguna duda avisame",
+  "cualquier cosa que no te cierre escribime",
+];
+
+export function wording(random: () => number = Math.random): Wording {
+  return {
+    opener: `${pick(GREETINGS, random)}! ${pick(SEEN, random)} [tema del reel], ${pick(OFFER, random)}`,
+    link: `${pick(LINK_INTROS, random)} {link}`,
+    closing: pick(CLOSINGS, random),
+  };
 }
 
 export interface TurnDecision {
@@ -251,12 +317,19 @@ export function buildTurnPrompt(input: TurnInput): string {
   ].join("\n");
 
   const talkedBefore = input.transcript.some((line) => line.role !== "user");
+  const w = input.wording;
   const task =
     input.mode === "charla"
-      ? "escribí tu próxima respuesta."
+      ? `escribí tu próxima respuesta.${
+          w
+            ? ` esta vez, si mandás el recurso, el mensaje del link es "${w.link}", y si te ponés a las órdenes, decí "${w.closing}" (en lugar de las frases de ejemplo del guion o de las notas).`
+            : ""
+        }`
       : talkedBefore
         ? "ya venían hablando y ahora comentó otro reel: respondé a ese comentario retomando la charla, con exactamente un mensaje, sin audio y sin recurso."
-        : "es el primer mensaje, la respuesta privada a su comentario: exactamente un mensaje (el abridor), sin audio y sin recurso.";
+        : `es el primer mensaje, la respuesta privada a su comentario: exactamente un mensaje (el abridor), sin audio y sin recurso.${
+            w ? ` esta vez escribilo así: "${w.opener}", con el tema del reel en lugar de [tema del reel].` : ""
+          }`;
 
   return [
     `<reel>\n${input.reel || "(sin datos del reel)"}\n</reel>`,

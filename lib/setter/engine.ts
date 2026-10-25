@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import type { Job } from "bullmq";
 import { prisma } from "@/lib/db/client";
 import {
@@ -34,7 +33,7 @@ import {
   type AudioKey,
 } from "./config";
 import { budgetLeft, recordSpend } from "./budget";
-import { runTurn, type TranscriptLine, type TurnDecision, type TurnInput, type TurnTools } from "./brain";
+import { runTurn, wording, type TranscriptLine, type TurnDecision, type TurnInput, type TurnTools } from "./brain";
 import {
   busyBetween,
   calendarConfigured,
@@ -204,6 +203,7 @@ async function turnInput(
     transcript: await transcriptOf(conversation.id),
     now: new Date(),
     ownerTimeZone: ownerTimeZone(),
+    wording: wording(),
   };
 }
 
@@ -363,9 +363,6 @@ export async function syncSetterEchoesFlag(): Promise<void> {
 
 // ─── Opening: the private reply to a comment ────────────────────────────────────
 
-const OPENER_CACHE_PREFIX = "setter:opener:";
-const OPENER_CACHE_SECONDS = 14 * 24 * 3600;
-
 export type SetterOpening =
   | { kind: "send"; conversationId: string; text: string; model: string; costUsd: number }
   | { kind: "owner" };
@@ -422,17 +419,8 @@ export async function setterOpening({
     const campaign = await campaignFor(automation.id);
     const model = setterModel();
     const input = await turnInput("abridor", conversation, campaign, context);
-    // The first message to a stranger is the script's opener with the reel's
-    // topic: the same for everyone who comments on that reel, so it is written
-    // once and reused. Someone already talking to the setter gets a fresh one.
-    const firstContact = !input.transcript.some((line) => line.role !== "user");
-    const cacheKey = `${OPENER_CACHE_PREFIX}${automation.id}:${createHash("sha1").update(input.reel).digest("hex").slice(0, 12)}`;
-    if (firstContact) {
-      const cached = await getRedisConnection().get(cacheKey);
-      if (cached && !forbiddenOutput([cached])) {
-        return { kind: "send", conversationId: conversation.id, text: cached, model, costUsd: 0 };
-      }
-    }
+    // Written for each person, never reused: hundreds of identical first
+    // messages to strangers is what Instagram's spam filter looks for.
     const { decision, costUsd } = await runTurn(model, input, slotTools(conversation, campaign, true));
     await recordSpend(costUsd);
     const text = humanize(decision.messages[0] ?? "");
@@ -442,7 +430,6 @@ export async function setterOpening({
     if (decision.notes) {
       await prisma.setterConversation.update({ where: { id: conversation.id }, data: { notes: decision.notes } });
     }
-    if (firstContact) await getRedisConnection().set(cacheKey, text, "EX", OPENER_CACHE_SECONDS);
     return { kind: "send", conversationId: conversation.id, text, model, costUsd };
   } catch (error) {
     console.error("[Setter] Opening failed, falling back to the campaign:", formatError(error));
@@ -588,12 +575,13 @@ export async function setterTakesTap(
 
 // ─── The answer ─────────────────────────────────────────────────────────────────
 
-async function handOver(conversation: Conversation, reason: string): Promise<void> {
+async function handOver(conversation: Conversation, reason: string, { quiet = false } = {}): Promise<void> {
   await prisma.setterConversation.update({
     where: { id: conversation.id },
     data: { status: "HUMAN", statusReason: reason },
   });
   await getRedisConnection().del(tokenKey(conversation.id));
+  if (quiet) return;
   await notifyOwner({
     title: `Contestale vos a ${conversation.username ? `@${conversation.username}` : "esta persona"}`,
     message: reason,
@@ -653,9 +641,12 @@ async function waitForTurn(
   slotAt: number
 ): Promise<void> {
   if (!withinReplyWindow(conversation.lastUserAt, slotAt)) {
+    // Without a notice each: a pause of hours runs out dozens of them (the
+    // pause's own notice says so, and setter.ts list shows them).
     await handOver(
       conversation,
-      "Instagram frenó los envíos del setter (límite de frecuencia) y su mensaje ya está por pasar las 24 h: contestale vos."
+      "Instagram frenó los envíos del setter (límite de frecuencia) y su mensaje ya está por pasar las 24 h: contestale vos.",
+      { quiet: true }
     );
     return;
   }
@@ -852,7 +843,7 @@ export async function processSetterReply(job: Job<SetterReplyJob>): Promise<void
       if (await pauseSending(instagramId)) {
         await notifyOwner({
           title: "Instagram frenó al setter",
-          message: `Límite de frecuencia (368). Pausa de ${Math.round(rateLimitPauseMs() / 60_000)} min: las respuestas esperan y después salen de a una.`,
+          message: `Límite de frecuencia (368). Pausa de unas ${Math.round(rateLimitPauseMs() / 3600_000)} h: las respuestas esperan y después salen de a una. Las que pasen las 24 h quedan para vos, sin aviso (setter.ts list).`,
           tags: ["hourglass"],
         });
       }
@@ -943,6 +934,9 @@ export async function processSetterReminder(job: Job<SetterReminderJob>): Promis
   if (!conversation?.callAt || conversation.callAt.toISOString() !== job.data.callAt) return;
   const account = await prisma.instagramAccount.findUnique({ where: { id: conversation.instagramAccountId } });
   if (!account || !hasInstagramCredentials(account)) return;
+  // While Instagram has the setter paused, trying would only extend the block:
+  // the calendar invitation reminds them anyway.
+  if ((await pausedUntil(account.instagramId)) > Date.now()) return;
   const context = await createInstagramContext(account, `${job.id}:setter-reminder`);
   const time = new Intl.DateTimeFormat("es-UY", {
     timeZone: conversation.timezone ?? ownerTimeZone(),

@@ -1,17 +1,23 @@
 import { RateLimitError } from "@/lib/meta/client";
 import { getRedisConnection } from "@/lib/queue/client";
+import { ownerTimeZone } from "./config";
 
 /**
  * Instagram caps how often an account can send messages (error 368, "we limit
- * how often you can..."). Retrying right away keeps hitting the cap, so when
- * the setter runs into it, it stops sending for a while (SETTER_RATE_LIMIT_
- * PAUSE_MINUTES) and the answers waiting meanwhile go out afterwards, one at a
- * time. Every answer also keeps a little distance from the previous one
- * (SETTER_REPLY_SPACING_SECONDS), so a busy hour does not come out in bursts.
+ * how often you can..."): an action block that grows when the account keeps
+ * trying. So when the setter runs into it, it stops sending for hours
+ * (SETTER_RATE_LIMIT_PAUSE_MINUTES), never ending the pause at night, and the
+ * answers waiting meanwhile go out afterwards, one at a time. Every answer
+ * also keeps a distance from the previous one (SETTER_REPLY_SPACING_SECONDS),
+ * never the same twice: a fixed beat is what a script looks like.
+ * SETTER_HOLD_UNTIL (an ISO date) holds every send until then, by hand.
  */
 
 // Instagram only takes a reply within 24 h of the person's last message.
 const REPLY_WINDOW_MS = 22 * 3600_000;
+
+// A pause that would end at night (owner's hours) ends in the morning instead.
+const MORNING_HOUR = 8;
 
 export function isRateLimited(error: unknown): boolean {
   return error instanceof RateLimitError;
@@ -19,12 +25,33 @@ export function isRateLimited(error: unknown): boolean {
 
 export function rateLimitPauseMs(): number {
   const value = Number(process.env.SETTER_RATE_LIMIT_PAUSE_MINUTES);
-  return (Number.isFinite(value) && value > 0 ? value : 30) * 60_000;
+  return (Number.isFinite(value) && value > 0 ? value : 360) * 60_000;
 }
 
 export function replySpacingMs(): number {
   const value = Number(process.env.SETTER_REPLY_SPACING_SECONDS);
   return (Number.isFinite(value) && value >= 0 ? value : 20) * 1000;
+}
+
+/** A time around `ms` (from 75% to 225% of it), different every call. */
+export function jittered(ms: number, random: () => number = Math.random): number {
+  return Math.round(ms * (0.75 + random() * 1.5));
+}
+
+export function holdUntil(): number {
+  const value = Date.parse(process.env.SETTER_HOLD_UNTIL ?? "");
+  return Number.isFinite(value) ? value : 0;
+}
+
+/** When a pause from `now` ends: about rateLimitPauseMs(), pushed past the night. */
+export function pauseEnd(now: number, random: () => number = Math.random): number {
+  const end = now + Math.round(rateLimitPauseMs() * (0.85 + random() * 0.3));
+  const hour = Number(
+    new Intl.DateTimeFormat("en-US", { timeZone: ownerTimeZone(), hour: "numeric", hourCycle: "h23" }).format(end)
+  );
+  if (hour >= MORNING_HOUR) return end;
+  // Up to the morning hour, then some minutes more so it is not on the hour.
+  return end + (MORNING_HOUR - hour) * 3600_000 + Math.round(random() * 45 * 60_000);
 }
 
 /** Whether an answer to a message received at `lastUserAt` can still go out. */
@@ -37,13 +64,14 @@ const slotKey = (instagramId: string) => `setter:next:${instagramId}`;
 
 /** Stops the setter's sends for this account. True if it was not paused already. */
 export async function pauseSending(instagramId: string, now = Date.now()): Promise<boolean> {
-  const pause = rateLimitPauseMs();
-  const fresh = await getRedisConnection().set(pauseKey(instagramId), String(now + pause), "PX", pause, "NX");
+  const end = pauseEnd(now);
+  const fresh = await getRedisConnection().set(pauseKey(instagramId), String(end), "PX", end - now, "NX");
   return fresh === "OK";
 }
 
 export async function pausedUntil(instagramId: string): Promise<number> {
-  return Number(await getRedisConnection().get(pauseKey(instagramId))) || 0;
+  const paused = Number(await getRedisConnection().get(pauseKey(instagramId))) || 0;
+  return Math.max(paused, holdUntil());
 }
 
 /**
@@ -56,7 +84,7 @@ export async function reserveSlot(instagramId: string, now = Date.now()): Promis
     `local paused = tonumber(redis.call('GET', KEYS[1]) or '0') or 0
      local free = tonumber(redis.call('GET', KEYS[2]) or '0') or 0
      local now = tonumber(ARGV[1])
-     local slot = math.max(now, paused, free)
+     local slot = math.max(now, paused, free, tonumber(ARGV[3]))
      local after = slot + tonumber(ARGV[2])
      redis.call('SET', KEYS[2], tostring(after), 'PX', after - now + 3600000)
      return tostring(slot)`,
@@ -64,7 +92,8 @@ export async function reserveSlot(instagramId: string, now = Date.now()): Promis
     pauseKey(instagramId),
     slotKey(instagramId),
     String(now),
-    String(replySpacingMs())
+    String(jittered(replySpacingMs())),
+    String(holdUntil())
   );
   return Number(result);
 }

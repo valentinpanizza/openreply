@@ -9,14 +9,14 @@ import { setterAllowsUser, setterAudios } from "../lib/setter/config";
 import { freeSlots, zonedToUtc, isValidTimeZone, withinOwnerHours } from "../lib/setter/calendar";
 import { costUsd } from "../lib/setter/budget";
 import { pageText } from "../lib/setter/context";
-import { buildTurnPrompt, parseDecision, type TurnInput } from "../lib/setter/brain";
+import { buildTurnPrompt, wording, parseDecision, type TurnInput } from "../lib/setter/brain";
 import { parseEchoEvents, parseMessageEvents } from "../lib/meta/webhook";
 import { forbiddenOutput, looksLikeInjection } from "../lib/setter/guard";
 import { transcribeAudio } from "../lib/setter/transcribe";
 import { callPrepPrompt, type PrepInput } from "../lib/setter/prep";
 import { setterButtons } from "../lib/setter/notify";
 import { parseCommand } from "../lib/setter/commands";
-import { isRateLimited, rateLimitPauseMs, replySpacingMs, withinReplyWindow } from "../lib/setter/pacing";
+import { holdUntil, isRateLimited, jittered, pauseEnd, rateLimitPauseMs, replySpacingMs, withinReplyWindow } from "../lib/setter/pacing";
 import { sendDirectMessage } from "../lib/meta/client";
 
 afterEach(() => {
@@ -237,6 +237,19 @@ describe("turn prompt", () => {
 
   it("asks for exactly one message on the opening", () => {
     expect(buildTurnPrompt({ ...input, mode: "abridor" })).toContain("exactamente un mensaje");
+    const w = { opener: "hey! vi tu comentario en el de [tema del reel], te lo mando?", link: "ahi va: {link}", closing: "si te queda alguna duda avisame" };
+    expect(buildTurnPrompt({ ...input, mode: "abridor", transcript: [], wording: w })).toContain(`escribilo así: "${w.opener}"`);
+    expect(buildTurnPrompt({ ...input, mode: "charla", wording: w })).toContain(`"ahi va: {link}"`);
+  });
+
+  it("words the stock phrases differently each time", () => {
+    const openers = new Set(Array.from({ length: 50 }, () => wording().opener));
+    expect(openers.size).toBeGreaterThan(30);
+    expect(wording(() => 0)).toEqual({
+      opener: "buenas! vi que comentaste el reel de [tema del reel], te lo paso?",
+      link: "dale, aca lo tenes: {link}",
+      closing: "cualquier cosa si te trancas con algo escribime, quedo a las ordenes",
+    });
   });
 });
 
@@ -445,13 +458,37 @@ describe("send cap", () => {
     expect(isRateLimited(new Error("boom"))).toBe(false);
   });
 
-  it("pauses 30 min and spaces answers 20 s unless told otherwise", () => {
-    expect(rateLimitPauseMs()).toBe(30 * 60_000);
+  it("pauses 6 h and spaces answers 20 s unless told otherwise", () => {
+    expect(rateLimitPauseMs()).toBe(360 * 60_000);
     expect(replySpacingMs()).toBe(20_000);
     vi.stubEnv("SETTER_RATE_LIMIT_PAUSE_MINUTES", "60");
     vi.stubEnv("SETTER_REPLY_SPACING_SECONDS", "0");
     expect(rateLimitPauseMs()).toBe(60 * 60_000);
     expect(replySpacingMs()).toBe(0);
+  });
+
+  it("never keeps the same beat", () => {
+    expect(jittered(20_000, () => 0)).toBe(15_000);
+    expect(jittered(20_000, () => 1)).toBe(45_000);
+    expect(new Set(Array.from({ length: 20 }, () => jittered(20_000))).size).toBeGreaterThan(1);
+  });
+
+  it("ends a pause in the morning, not at night (owner's hours)", () => {
+    vi.stubEnv("SETTER_RATE_LIMIT_PAUSE_MINUTES", "360");
+    const hour = (ms: number) =>
+      Number(new Intl.DateTimeFormat("en-US", { timeZone: "America/Montevideo", hour: "numeric", hourCycle: "h23" }).format(ms));
+    // 10:00 UY + ~6 h: 16 h, left alone.
+    expect(hour(pauseEnd(Date.parse("2026-10-25T13:00:00Z"), () => 0.5))).toBe(16);
+    // 22:00 UY + ~6 h: 4 h, moved to the morning.
+    expect(hour(pauseEnd(Date.parse("2026-10-26T01:00:00Z"), () => 0.5))).toBe(8);
+  });
+
+  it("holds every send until SETTER_HOLD_UNTIL", () => {
+    expect(holdUntil()).toBe(0);
+    vi.stubEnv("SETTER_HOLD_UNTIL", "2026-10-27T11:00:00-03:00");
+    expect(holdUntil()).toBe(Date.parse("2026-10-27T14:00:00Z"));
+    vi.stubEnv("SETTER_HOLD_UNTIL", "cualquier cosa");
+    expect(holdUntil()).toBe(0);
   });
 
   it("only waits while the answer still fits in Instagram's 24 h window", () => {

@@ -422,6 +422,11 @@ async function answerLeadQuestion(data: ProcessMessageJob): Promise<void> {
 function paceIntervalMs(): number {
   return Number(process.env.PRIVATE_REPLY_INTERVAL_SECONDS ?? 0) * 1000;
 }
+// The gap after each one: around the interval, never the same twice (a fixed
+// beat is what a script looks like to Instagram).
+function paceGapMs(): number {
+  return Math.round(paceIntervalMs() * (0.6 + Math.random() * 0.8));
+}
 function paceMaxWaitMs(): number {
   // Short of the 7 days a comment can take a private reply, with margin.
   return Number(process.env.PRIVATE_REPLY_MAX_WAIT_HOURS ?? 144) * 3600_000;
@@ -745,7 +750,7 @@ async function processComment(job: Job<ProcessCommentJob>): Promise<void> {
       // Already waiting for its turn: this is a reconciler or webhook copy.
       if (await isPaced(instagramAccountId, commentId)) return;
       const now = Date.now();
-      const slot = await reservePaceSlot(instagramAccountId, paceIntervalMs(), paceMaxWaitMs(), now);
+      const slot = await reservePaceSlot(instagramAccountId, paceGapMs(), paceMaxWaitMs(), now);
       const logRow = {
         workspaceId: automation.workspaceId,
         automationId: automation.id,
