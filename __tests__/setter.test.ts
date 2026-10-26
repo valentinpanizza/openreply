@@ -460,7 +460,7 @@ describe("send cap", () => {
 
   it("pauses 6 h and spaces answers 20 s unless told otherwise", () => {
     expect(rateLimitPauseMs()).toBe(360 * 60_000);
-    expect(replySpacingMs()).toBe(20_000);
+    expect(replySpacingMs()).toBe(150_000);
     vi.stubEnv("SETTER_RATE_LIMIT_PAUSE_MINUTES", "60");
     vi.stubEnv("SETTER_REPLY_SPACING_SECONDS", "0");
     expect(rateLimitPauseMs()).toBe(60 * 60_000);

@@ -9,7 +9,9 @@ import { ownerTimeZone } from "./config";
  * (SETTER_RATE_LIMIT_PAUSE_MINUTES), never ending the pause at night, and the
  * answers waiting meanwhile go out afterwards, one at a time. Every answer
  * also keeps a distance from the previous one (SETTER_REPLY_SPACING_SECONDS),
- * never the same twice: a fixed beat is what a script looks like.
+ * never the same twice: a fixed beat is what a script looks like. It is
+ * minutes, not seconds: at 20 s the backlog of a pause went out as ~90
+ * messages in half an hour (26/10) and Instagram blocked the account again.
  * SETTER_HOLD_UNTIL (an ISO date) holds every send until then, by hand.
  */
 
@@ -30,7 +32,7 @@ export function rateLimitPauseMs(): number {
 
 export function replySpacingMs(): number {
   const value = Number(process.env.SETTER_REPLY_SPACING_SECONDS);
-  return (Number.isFinite(value) && value >= 0 ? value : 20) * 1000;
+  return (Number.isFinite(value) && value >= 0 ? value : 150) * 1000;
 }
 
 /** A time around `ms` (from 75% to 225% of it), different every call. */

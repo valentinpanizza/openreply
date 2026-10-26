@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import type { Job } from "bullmq";
 import { prisma } from "@/lib/db/client";
 import {
@@ -676,12 +677,21 @@ function resourceMessages(
     return { messages, sentResource: false };
   }
   if (!messages.some((m) => /\{link\}/i.test(m))) messages.push("aca lo tenes: {link}");
+  const trackedLinks = trackedLinksFor(campaign!.trackedLinks);
   messages = messages.map((m) =>
-    /\{link\}/i.test(m)
-      ? renderMessageWithTracking({ message: m, trackedLinks: campaign!.trackedLinks })
-      : m
+    /\{link\}/i.test(m) ? renderMessageWithTracking({ message: m, trackedLinks }) : m
   );
   return { messages, sentResource: true };
+}
+
+/**
+ * The campaign's links with a random tail (/r/<slug>/<ref>, which redirects
+ * the same): one identical URL going to dozens of people within minutes is
+ * what Instagram's spam filter looks for (the 368 blocks of 22/10 and 26/10
+ * came after bursts carrying the same /r/ link).
+ */
+export function trackedLinksFor<T extends { slug: string }>(links: T[]): T[] {
+  return links.map((link) => ({ ...link, slug: `${link.slug}/${randomBytes(4).toString("hex")}` }));
 }
 
 export async function processSetterReply(job: Job<SetterReplyJob>): Promise<void> {

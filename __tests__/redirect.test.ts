@@ -16,6 +16,7 @@ vi.mock("@/lib/db/client", () => ({
 }));
 
 import { GET } from "../app/r/[slug]/route";
+import { GET as GET_WITH_REF } from "../app/r/[slug]/[ref]/route";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -76,5 +77,31 @@ describe("tracked link redirect route", () => {
     expect(response.status).toBe(302);
     expect(response.headers.get("location")).toBe("https://manychat-alternative.com/");
     expect(mockPrisma.linkClick.create).not.toHaveBeenCalled();
+  });
+
+  it("ignores the per-message tail of /r/<slug>/<ref>", async () => {
+    mockPrisma.trackedLink.findUnique.mockResolvedValue({
+      id: "link_123",
+      workspaceId: "workspace_123",
+      automationId: "automation_123",
+      destinationUrl: "https://example.com/offer",
+      automation: { instagramAccountId: "instagram_account_123" },
+    });
+    mockPrisma.linkClick.create.mockResolvedValue({});
+
+    const response = await GET_WITH_REF(
+      new Request("https://manychat-alternative.com/r/abc123/9f2c41aa") as Parameters<
+        typeof GET_WITH_REF
+      >[0],
+      { params: Promise.resolve({ slug: "abc123", ref: "9f2c41aa" }) }
+    );
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe("https://example.com/offer");
+    expect(mockPrisma.trackedLink.findUnique).toHaveBeenCalledWith({
+      where: { slug: "abc123" },
+      select: expect.any(Object),
+    });
+    expect(mockPrisma.linkClick.create).toHaveBeenCalled();
   });
 });
