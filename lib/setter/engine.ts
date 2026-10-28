@@ -696,7 +696,8 @@ function resourceMessages(
     messages = messages
       .map((m) => m.replace(/\s*\{link\}/gi, "").trim())
       .filter((m) => m && !LINK_INTRO_ONLY.test(m));
-    return { messages, sentResource: false };
+    // The goodbye to someone who already has the resource: one line at most.
+    return { messages: onlyLink ? messages.slice(0, 1) : messages, sentResource: false };
   }
   // A chat that ends with the resource ends with that one message: the
   // "quedo a las ordenes" around it were ~15% of the sends (27/10).
@@ -778,7 +779,7 @@ export async function processSetterReply(job: Job<SetterReplyJob>): Promise<void
     await rememberFit(conversationId, decision.fit);
     const closing = decision.phase === "cierre" && !conversation.callAt;
     const { messages, sentResource } = resourceMessages(decision, campaign, { onlyLink: closing });
-    if (closing && sentResource) decision.audio = null;
+    if (closing) decision.audio = null;
     const blocked = forbiddenOutput(messages);
     if (blocked) {
       await prisma.setterConversation.update({
