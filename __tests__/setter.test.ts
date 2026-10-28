@@ -18,6 +18,7 @@ import { setterButtons } from "../lib/setter/notify";
 import { parseCommand } from "../lib/setter/commands";
 import { holdUntil, isRateLimited, jittered, pauseEnd, rateLimitPauseMs, replySpacingMs, withinReplyWindow } from "../lib/setter/pacing";
 import { sendDirectMessage } from "../lib/meta/client";
+import { dailyReplyCap, isPriority, nextMorning } from "../lib/setter/quota";
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -237,7 +238,7 @@ describe("turn prompt", () => {
 
   it("asks for exactly one message on the opening", () => {
     expect(buildTurnPrompt({ ...input, mode: "abridor" })).toContain("exactamente un mensaje");
-    const w = { opener: "hey! vi tu comentario en el de [tema del reel], te lo mando?", link: "ahi va: {link}", closing: "si te queda alguna duda avisame" };
+    const w = { opener: "hey! vi tu comentario en el de [tema del reel], te lo mando?", link: "ahi va: {link}" };
     expect(buildTurnPrompt({ ...input, mode: "abridor", transcript: [], wording: w })).toContain(`escribilo así: "${w.opener}"`);
     expect(buildTurnPrompt({ ...input, mode: "charla", wording: w })).toContain(`"ahi va: {link}"`);
   });
@@ -248,7 +249,6 @@ describe("turn prompt", () => {
     expect(wording(() => 0)).toEqual({
       opener: "buenas! vi que comentaste el reel de [tema del reel], te lo paso?",
       link: "dale, aca lo tenes: {link}",
-      closing: "cualquier cosa si te trancas con algo escribime, quedo a las ordenes",
     });
   });
 });
@@ -379,6 +379,46 @@ describe("handoff parsing", () => {
 
   it("keeps a real reason", () => {
     expect(handoff("insiste con el precio")).toBe("insiste con el precio");
+  });
+
+  it("reads whether the person qualifies, and nothing made up", () => {
+    const fit = (value: unknown) => parseDecision({ mensajes: ["hola"], califica: value }, input).fit;
+    expect(fit("negocio")).toBe("negocio");
+    expect(fit("no")).toBe("no");
+    expect(fit("capaz")).toBeNull();
+    expect(fit(undefined)).toBeNull();
+  });
+});
+
+describe("daily reply cap", () => {
+  const hourUy = (ms: number) =>
+    new Intl.DateTimeFormat("es-UY", { timeZone: "America/Montevideo", day: "2-digit", hour: "2-digit", hourCycle: "h23" }).format(ms);
+
+  it("caps at 250 a day unless told otherwise, 0 turns it off", () => {
+    expect(dailyReplyCap()).toBe(250);
+    vi.stubEnv("SETTER_DAILY_REPLIES", "0");
+    expect(dailyReplyCap()).toBe(0);
+    vi.stubEnv("SETTER_DAILY_REPLIES", "cualquier cosa");
+    expect(dailyReplyCap()).toBe(250);
+  });
+
+  it("keeps answering whoever can end in a call", () => {
+    const early = { phase: "situacion", callAt: null };
+    expect(isPriority(early, "negocio")).toBe(true);
+    expect(isPriority(early, "profesional")).toBe(true);
+    expect(isPriority(early, "no")).toBe(false);
+    expect(isPriority(early, null)).toBe(false);
+    expect(isPriority({ phase: "pitch", callAt: null }, null)).toBe(true);
+    expect(isPriority({ phase: "cierre", callAt: new Date() }, "no")).toBe(true);
+  });
+
+  it("leaves the rest for after 9:00 of the next morning (Uruguay)", () => {
+    // 27/10 22:00 UY → 28/10 9:00.
+    expect(hourUy(nextMorning(Date.parse("2026-10-28T01:00:00Z"), () => 0))).toBe("28, 09");
+    // 28/10 03:00 UY → that same morning.
+    expect(hourUy(nextMorning(Date.parse("2026-10-28T06:00:00Z"), () => 0))).toBe("28, 09");
+    // 28/10 15:00 UY → 29/10, some minutes past 9.
+    expect(hourUy(nextMorning(Date.parse("2026-10-28T18:00:00Z"), () => 0.5))).toBe("29, 09");
   });
 });
 

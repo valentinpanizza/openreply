@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { AUDIO_KEYS, type AudioKey } from "./config";
 import { costUsd } from "./budget";
+import { FITS, type Fit } from "./quota";
 
 /**
  * One turn of the setter: Claude reads the conversation and decides what to
@@ -69,12 +70,12 @@ seguí estos pasos en orden. lo que pregunta cada paso es fijo; las frases entre
 
 6. agenda (abajo).
 
-si no califica: en lugar del pitch (paso 5), empatizá rápido, mandale el recurso (enviar_recurso) con un mensaje con {link}, y ponete a las órdenes, con tus palabras (algo como "dale, aca lo tenes: {link}" y "cualquier cosa si te trancas con algo escribime, quedo a las ordenes", nunca igual). no le ofrezcas llamada. si después pide una llamada él mismo, tratala como profesional (avisale que la consultoría es paga y agendá).
+si no califica: en lugar del pitch (paso 5), mandale el recurso (enviar_recurso) en un solo mensaje con {link}, y nada más: sin empatizar aparte, sin ponerte a las órdenes, sin audio (cada mensaje de más suma para el límite de instagram), y la fase queda en cierre. no le ofrezcas llamada. si después pide una llamada él mismo, tratala como profesional (avisale que la consultoría es paga y agendá).
 
 empatizar rápido es una frase corta y concreta sobre lo que dijo ("uh si, eso te come el dia", "buenisimo, una inmobiliaria"), nunca genérica. si la persona ya contestó algo de un paso, no lo vuelvas a preguntar: adaptá esa frase o pasá al siguiente. si está aprendiendo y no tiene negocio, adaptá las frases a lo que quiere armar (la llamada es una consultoría 1 a 1 para ver cómo arrancar).
 
 ## el recurso
-el reel le prometió el recurso. si lo vuelve a pedir o insiste, mandáselo (enviar_recurso), aunque no hayan llegado a la llamada. si la charla termina sin llamada (no le interesa, no tiene tiempo, dice que no a la propuesta), mandáselo igual para cerrar bien. nunca lo mandes dos veces. cuando lo mandás, escribí un mensaje con {link} donde va el link, cada vez distinto (por ejemplo "dale, aca lo tenes: {link}", "listo, te lo dejo aca {link}").
+el reel le prometió el recurso. si lo vuelve a pedir o insiste, mandáselo (enviar_recurso), aunque no hayan llegado a la llamada. si la charla termina sin llamada (no le interesa, no tiene tiempo, dice que no a la propuesta), mandáselo igual para cerrar bien. nunca lo mandes dos veces. cuando lo mandás, escribí un mensaje con {link} donde va el link, cada vez distinto (por ejemplo "dale, aca lo tenes: {link}", "listo, te lo dejo aca {link}"). si con eso termina la charla, ese mensaje es el último: no agregues un saludo ni "cualquier cosa escribime".
 
 ## notas del dueño
 si en <reel> vienen "notas del dueño sobre este reel", las escribiste vos para ese reel y mandan sobre el guion y sobre quién califica: hacé lo que dicen aunque el guion diga otra cosa (por ejemplo, no preguntar a qué se dedica y mandar el recurso enseguida). el abridor (paso 1) va igual, salvo que las notas hablen del abridor. las frases entre comillas de las notas también son ejemplos: decilas con otras palabras. los límites de abajo siguen valiendo igual.
@@ -170,12 +171,18 @@ const TOOLS: Anthropic.Tool[] = [
             "Resumen breve y actualizado de lo que sabés de la persona: negocio o interés, qué necesita, obstáculo, país, estado.",
         },
         zona_horaria: { type: "string", description: "Zona horaria IANA de la persona si la sabés; si no, vacío." },
+        califica: {
+          type: "string",
+          enum: [...FITS],
+          description:
+            "Si califica según \"quién califica\": negocio, profesional (quiere aprender para su trabajo), no (estudiante, curiosidad, competidor) o no_se (todavía no lo sabés).",
+        },
         pasar_a_humano: {
           type: "string",
           description: "Motivo para pasar la charla a mano (la seguís escribiendo vos mismo); vacío si seguís normal.",
         },
       },
-      required: ["mensajes", "audio", "enviar_recurso", "fase", "notas", "zona_horaria", "pasar_a_humano"],
+      required: ["mensajes", "audio", "enviar_recurso", "fase", "notas", "zona_horaria", "califica", "pasar_a_humano"],
       additionalProperties: false,
     },
   },
@@ -215,7 +222,6 @@ export interface TurnInput {
 export interface Wording {
   opener: string;
   link: string;
-  closing: string;
 }
 
 const pick = <T,>(options: readonly T[], random: () => number) => options[Math.floor(random() * options.length)];
@@ -247,21 +253,10 @@ const LINK_INTROS = [
   "listo, aca lo tenes:",
   "va por aca:",
 ];
-const CLOSINGS = [
-  "cualquier cosa si te trancas con algo escribime, quedo a las ordenes",
-  "si te trabas en algo avisame y lo vemos",
-  "cualquier duda que te surja escribime por aca",
-  "si algo no te sale escribime, quedo a las ordenes",
-  "cualquier cosa me escribis y te doy una mano",
-  "si te queda alguna duda avisame",
-  "cualquier cosa que no te cierre escribime",
-];
-
 export function wording(random: () => number = Math.random): Wording {
   return {
     opener: `${pick(GREETINGS, random)}! ${pick(SEEN, random)} [tema del reel], ${pick(OFFER, random)}`,
     link: `${pick(LINK_INTROS, random)} {link}`,
-    closing: pick(CLOSINGS, random),
   };
 }
 
@@ -272,6 +267,7 @@ export interface TurnDecision {
   phase: string;
   notes: string;
   timezone: string | null;
+  fit: Fit | null;
   handoff: string | null;
 }
 
@@ -322,7 +318,7 @@ export function buildTurnPrompt(input: TurnInput): string {
     input.mode === "charla"
       ? `escribí tu próxima respuesta.${
           w
-            ? ` esta vez, si mandás el recurso, el mensaje del link es "${w.link}", y si te ponés a las órdenes, decí "${w.closing}" (en lugar de las frases de ejemplo del guion o de las notas).`
+            ? ` esta vez, si mandás el recurso, el mensaje del link es "${w.link}" (en lugar de las frases de ejemplo del guion o de las notas).`
             : ""
         }`
       : talkedBefore
@@ -362,6 +358,7 @@ export function parseDecision(raw: unknown, input: TurnInput): TurnDecision {
     : [];
   const audio = text("audio") as AudioKey;
   const phase = text("fase");
+  const fit = text("califica");
   return {
     messages: messages.slice(0, input.mode === "abridor" ? 1 : 3),
     audio: input.mode === "charla" && input.audios.includes(audio) ? audio : null,
@@ -369,6 +366,7 @@ export function parseDecision(raw: unknown, input: TurnInput): TurnDecision {
     phase: (PHASES as readonly string[]).includes(phase) ? phase : input.phase,
     notes: text("notas") || input.notes || "",
     timezone: text("zona_horaria") || null,
+    fit: (FITS as readonly string[]).includes(fit) ? (fit as Fit) : null,
     handoff: handoffReason(text("pasar_a_humano")),
   };
 }

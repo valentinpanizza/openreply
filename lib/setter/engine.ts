@@ -52,6 +52,7 @@ import { transcribeAudio } from "./transcribe";
 import { forbiddenOutput, looksLikeInjection } from "./guard";
 import { replyDelayMs, typingDelayMs } from "./timing";
 import { isRateLimited, pauseSending, pausedUntil, rateLimitPauseMs, reserveSlot, withinReplyWindow } from "./pacing";
+import { dailyReplyCap, fitOf, isPriority, nextMorning, overReplyCap, recordReplies, rememberFit } from "./quota";
 import { chatLink, notifyOwner, setterButtons } from "./notify";
 import { callPrepPrompt } from "./prep";
 
@@ -476,7 +477,7 @@ async function scheduleReply(
   token: string,
   delay: number,
   retry = 0,
-  wait?: { slotAt: number; waits: number }
+  wait?: { slotAt?: number; waits: number }
 ) {
   await getRedisConnection().set(tokenKey(conversation.id), token, "EX", 24 * 3600);
   await getDMQueue().add(
@@ -657,13 +658,34 @@ async function waitForTurn(
   });
 }
 
+/**
+ * Past the daily cap (quota.ts), someone not worth a call waits for the next
+ * morning, spaced again then. Past Instagram's 24 h window by then, the owner
+ * takes it, without a notice each.
+ */
+async function deferToMorning(conversation: Conversation, data: SetterReplyJob, token: string): Promise<void> {
+  const morning = nextMorning(Date.now());
+  if (!withinReplyWindow(conversation.lastUserAt, morning)) {
+    await handOver(
+      conversation,
+      `Se llegó al tope diario de respuestas del setter (SETTER_DAILY_REPLIES=${dailyReplyCap()}) y su mensaje no llegaba a esperar a mañana: contestale vos si vale la pena.`,
+      { quiet: true }
+    );
+    return;
+  }
+  await scheduleReply(conversation, data, token, morning - Date.now(), data.retry ?? 0, {
+    waits: (data.waits ?? 0) + 1,
+  });
+}
+
 // A message that only introduced the link ("dale, aca lo tenes:"), left
 // empty when the link can't go.
 const LINK_INTRO_ONLY = /^[\w\s,]*(aca|acá|ahi|ahí)\s+(te\s+)?(lo|la)\s+ten[eé]s:?$/i;
 
 function resourceMessages(
   decision: TurnDecision,
-  campaign: Awaited<ReturnType<typeof campaignFor>>
+  campaign: Awaited<ReturnType<typeof campaignFor>>,
+  { onlyLink = false } = {}
 ): { messages: string[]; sentResource: boolean } {
   let messages = decision.messages.map(humanize);
   // Writing {link} is asking for it too: sent again if they ask again, since
@@ -676,6 +698,9 @@ function resourceMessages(
       .filter((m) => m && !LINK_INTRO_ONLY.test(m));
     return { messages, sentResource: false };
   }
+  // A chat that ends with the resource ends with that one message: the
+  // "quedo a las ordenes" around it were ~15% of the sends (27/10).
+  if (onlyLink) messages = messages.filter((m) => /\{link\}/i.test(m)).slice(0, 1);
   if (!messages.some((m) => /\{link\}/i.test(m))) messages.push("aca lo tenes: {link}");
   const trackedLinks = trackedLinksFor(campaign!.trackedLinks);
   messages = messages.map((m) =>
@@ -716,6 +741,11 @@ export async function processSetterReply(job: Job<SetterReplyJob>): Promise<void
     conversation = await prisma.setterConversation.findUnique({ where: { id: conversationId } });
     if (!conversation) return;
 
+    if ((await overReplyCap()) && !isPriority(conversation, await fitOf(conversationId))) {
+      await deferToMorning(conversation, job.data, token);
+      return;
+    }
+
     // Its turn to send: right away, unless Instagram has the setter paused or
     // another answer just went out. One that already waited keeps its turn.
     const instagramId = job.data.instagramAccountId;
@@ -745,7 +775,10 @@ export async function processSetterReply(job: Job<SetterReplyJob>): Promise<void
     // the newer job answers instead. A booking made meanwhile is already saved.
     if (!(await stillCurrent(conversationId, token))) return;
 
-    const { messages, sentResource } = resourceMessages(decision, campaign);
+    await rememberFit(conversationId, decision.fit);
+    const closing = decision.phase === "cierre" && !conversation.callAt;
+    const { messages, sentResource } = resourceMessages(decision, campaign, { onlyLink: closing });
+    if (closing && sentResource) decision.audio = null;
     const blocked = forbiddenOutput(messages);
     if (blocked) {
       await prisma.setterConversation.update({
@@ -771,6 +804,7 @@ export async function processSetterReply(job: Job<SetterReplyJob>): Promise<void
         message: text,
       });
       sentSomething = true;
+      await recordReplies(1);
       await prisma.setterMessage.create({
         data: {
           conversationId,
@@ -795,6 +829,7 @@ export async function processSetterReply(job: Job<SetterReplyJob>): Promise<void
         url: audioUrls[Math.floor(Math.random() * audioUrls.length)],
       });
       sentSomething = true;
+      await recordReplies(1);
       await prisma.setterMessage.create({
         data: {
           conversationId,
