@@ -705,7 +705,13 @@ function resourceMessages(
   // A chat that ends with the resource ends with that one message: the
   // "quedo a las ordenes" around it were ~15% of the sends (27/10).
   if (onlyLink) messages = messages.filter((m) => /\{link\}/i.test(m)).slice(0, 1);
-  if (!messages.some((m) => /\{link\}/i.test(m))) messages.push("te lo dejo aca abajo {link}");
+  if (!messages.some((m) => /\{link\}/i.test(m))) {
+    // A message that already hands it over ("te lo dejo aca abajo") carries
+    // the button; otherwise one more message does.
+    const handing = messages.findIndex((m) => /\babajo\b/i.test(m));
+    if (handing >= 0) messages[handing] = `${messages[handing]} {link}`;
+    else messages.push("te lo dejo aca abajo {link}");
+  }
   const trackedLinks = trackedLinksFor(campaign!.trackedLinks);
   messages = messages.map((m) =>
     /\{link\}/i.test(m) ? renderMessageWithTracking({ message: m, trackedLinks }) : m
