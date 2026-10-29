@@ -43,3 +43,16 @@ export function describeAttachment(type: string | undefined): string {
       return "[mandó un archivo]";
   }
 }
+
+const TRACKED_LINK = /\s*:?\s*(https?:\/\/\S+\/r\/\S+)/;
+
+/**
+ * A message carrying a tracked link, split into the text and the link that
+ * goes in a button under it. Null when there is no link.
+ */
+export function splitLink(message: string): { text: string; url: string } | null {
+  const link = message.match(TRACKED_LINK);
+  if (!link) return null;
+  const text = message.replace(TRACKED_LINK, " ").replace(/\s+/g, " ").trim();
+  return { text: text || "te lo dejo aca abajo", url: link[1] };
+}

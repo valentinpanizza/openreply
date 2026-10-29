@@ -15,8 +15,10 @@ import {
 import {
   createInstagramContext,
   hasInstagramCredentials,
+  MetaApiError,
   sendDirectAudio,
   sendDirectMessage,
+  sendDirectMessageWithLinkButton,
   type InstagramContext,
 } from "@/lib/instagram/provider";
 import { renderMessageWithTracking } from "@/lib/tracking/message";
@@ -47,7 +49,7 @@ import {
   zonedToUtc,
 } from "./calendar";
 import { reelContext, type ReelCampaign } from "./context";
-import { describeAttachment, humanize } from "./text";
+import { describeAttachment, humanize, splitLink } from "./text";
 import { transcribeAudio } from "./transcribe";
 import { forbiddenOutput, looksLikeInjection } from "./guard";
 import { replyDelayMs, typingDelayMs } from "./timing";
@@ -680,7 +682,8 @@ async function deferToMorning(conversation: Conversation, data: SetterReplyJob, 
 
 // A message that only introduced the link ("dale, aca lo tenes:"), left
 // empty when the link can't go.
-const LINK_INTRO_ONLY = /^[\w\s,]*(aca|acá|ahi|ahí)\s+(te\s+)?(lo|la)\s+ten[eé]s:?$/i;
+const LINK_INTRO_ONLY =
+  /^[\w\s,]*(aca|acá|ahi|ahí)\s+(te\s+)?(lo|la)\s+ten[eé]s:?$|\b(aca|acá|ahi|ahí)?\s*abajo\b/i;
 
 function resourceMessages(
   decision: TurnDecision,
@@ -702,7 +705,7 @@ function resourceMessages(
   // A chat that ends with the resource ends with that one message: the
   // "quedo a las ordenes" around it were ~15% of the sends (27/10).
   if (onlyLink) messages = messages.filter((m) => /\{link\}/i.test(m)).slice(0, 1);
-  if (!messages.some((m) => /\{link\}/i.test(m))) messages.push("aca lo tenes: {link}");
+  if (!messages.some((m) => /\{link\}/i.test(m))) messages.push("te lo dejo aca abajo {link}");
   const trackedLinks = trackedLinksFor(campaign!.trackedLinks);
   messages = messages.map((m) =>
     /\{link\}/i.test(m) ? renderMessageWithTracking({ message: m, trackedLinks }) : m
@@ -718,6 +721,32 @@ function resourceMessages(
  */
 export function trackedLinksFor<T extends { slug: string }>(links: T[]): T[] {
   return links.map((link) => ({ ...link, slug: `${link.slug}/${randomBytes(4).toString("hex")}` }));
+}
+
+const LINK_BUTTON_TITLES = ["Abrir", "Ver acá", "Abrir acá", "Verlo"];
+
+/**
+ * A message carrying the resource goes out with the link in a button under it
+ * (like ManyChat does), not pasted in the text: links in DM text are what
+ * Meta's filter reads as harvesting data. If Instagram refuses the template,
+ * the plain text with the link goes instead.
+ */
+async function sendSetterMessage(params: {
+  context: InstagramContext;
+  instagramAccountId: string;
+  userId: string;
+  message: string;
+}) {
+  const split = splitLink(params.message);
+  if (!split) return sendDirectMessage(params);
+  const title = LINK_BUTTON_TITLES[Math.floor(Math.random() * LINK_BUTTON_TITLES.length)];
+  try {
+    return await sendDirectMessageWithLinkButton({ ...params, text: split.text, buttons: [{ title, url: split.url }] });
+  } catch (error) {
+    if (!(error instanceof MetaApiError) || error.code !== 100) throw error;
+    console.log("[Setter] Link button refused, sending the link as text:", error.message);
+    return sendDirectMessage(params);
+  }
 }
 
 export async function processSetterReply(job: Job<SetterReplyJob>): Promise<void> {
@@ -798,7 +827,7 @@ export async function processSetterReply(job: Job<SetterReplyJob>): Promise<void
         await sleep(typingDelayMs(text));
         if (!(await stillCurrent(conversationId, token))) break;
       }
-      const result = await sendDirectMessage({
+      const result = await sendSetterMessage({
         context,
         instagramAccountId: account.instagramId,
         userId: conversation.userId,

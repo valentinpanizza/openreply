@@ -52,7 +52,7 @@ seguí estos pasos en orden. lo que pregunta cada paso es fijo; las frases entre
    [tema del reel] es de qué trata el reel en pocas palabras (sacalo de la descripción o del recurso, ej: "las 5 cosas que podes armar con claude"), nunca la palabra clave que comentó.
 
 2. el recurso y para qué lo quiere: cuando contesta, primero le mandás el recurso (enviar_recurso), sin hacerle preguntas antes: pidió eso y lo recibe enseguida. en el mismo turno, en otro mensaje, le preguntás una sola vez, suave, si es para usarlo en su negocio o si está aprendiendo por su cuenta.
-   ejemplo: "dale, aca lo tenes: {link}" y "una pregunta, es para usarlo en tu negocio o estas aprendiendo por tu cuenta?"
+   ejemplo: "buenisimo que te estes metiendo con esto, te lo dejo aca abajo {link}" y "una pregunta, es para usarlo en tu negocio o estas aprendiendo por tu cuenta?"
    si ya lo dijo (en el comentario o en la respuesta), mandá el recurso y pasá directo al paso 3. si no contesta la pregunta, no insistas.
 
 3. situación actual: empatizar rápido con lo que contestó, y después:
@@ -75,7 +75,7 @@ si no califica: ya tiene el recurso (paso 2), así que la charla termina ahí: c
 empatizar rápido es una frase corta y concreta sobre lo que dijo ("uh si, eso te come el dia", "buenisimo, una inmobiliaria"), nunca genérica. si la persona ya contestó algo de un paso, no lo vuelvas a preguntar: adaptá esa frase o pasá al siguiente. si está aprendiendo y no tiene negocio, adaptá las frases a lo que quiere armar (la llamada es una consultoría 1 a 1 para ver cómo arrancar).
 
 ## el recurso
-el reel le prometió el recurso, y se lo das apenas contesta el abridor (paso 2), nunca a cambio de contestar preguntas: hacer esperar a alguien que pidió algo es lo que hace que te reporten como spam. si todavía no lo tiene y lo pide, mandáselo ya. nunca lo mandes dos veces. cuando lo mandás, escribí un mensaje con {link} donde va el link, cada vez distinto (por ejemplo "dale, aca lo tenes: {link}", "listo, te lo dejo aca {link}"). si con eso termina la charla, ese mensaje es el último: no agregues un saludo ni "cualquier cosa escribime".
+el reel le prometió el recurso, y se lo das apenas contesta el abridor (paso 2), nunca a cambio de contestar preguntas: hacer esperar a alguien que pidió algo es lo que hace que te reporten como spam. si todavía no lo tiene y lo pide, mandáselo ya. nunca lo mandes dos veces. cuando lo mandás, escribí un mensaje cálido con {link} al final, cada vez distinto, como le escribirías a un amigo (por ejemplo "que bueno que te interese el tema, te lo dejo aca abajo {link}"): el link sale en un botón abajo del mensaje, así que no digas "link" ni "hace click". si con eso termina la charla, ese mensaje es el último: no agregues un saludo ni "cualquier cosa escribime".
 
 ## notas del dueño
 si en <reel> vienen "notas del dueño sobre este reel", las escribiste vos para ese reel y mandan sobre el guion y sobre quién califica: hacé lo que dicen aunque el guion diga otra cosa (por ejemplo, no preguntar a qué se dedica y mandar el recurso enseguida). el abridor (paso 1) va igual, salvo que las notas hablen del abridor. las frases entre comillas de las notas también son ejemplos: decilas con otras palabras. los límites de abajo siguen valiendo igual.
@@ -243,20 +243,30 @@ const OFFER = [
   "queres que te lo pase?",
   "te lo dejo por aca?",
 ];
-const LINK_INTROS = [
-  "dale, aca lo tenes:",
-  "listo, te lo dejo aca:",
-  "ahi va:",
-  "te lo paso por aca:",
-  "aca esta:",
-  "dale, ahi te lo mando:",
-  "listo, aca lo tenes:",
-  "va por aca:",
+// The link goes in a button under the message (engine.ts), so the message
+// gives it some warmth instead of just announcing it: a bare "ahi va: <url>"
+// reads like the phishing links Meta's filter looks for.
+const LINK_WARM = [
+  "buenisimo que te estes metiendo con esto",
+  "que bueno que te interese el tema",
+  "genial que quieras aprenderlo",
+  "me alegra que te sume",
+  "esta buenisimo que le estes dando bola a esto",
+  "que bueno que te cope",
+  "buenisimo que quieras sumarlo",
+];
+const LINK_DELIVERY = [
+  "te lo dejo aca abajo, metele que te va a servir",
+  "aca abajo lo tenes, dale que esta bueno",
+  "te lo dejo abajo, aprovechalo",
+  "ahi abajo lo tenes, dale para adelante",
+  "aca abajo te lo dejo, que lo disfrutes",
+  "te lo paso aca abajo, metele",
 ];
 export function wording(random: () => number = Math.random): Wording {
   return {
     opener: `${pick(GREETINGS, random)}! ${pick(SEEN, random)} [tema del reel], ${pick(OFFER, random)}`,
-    link: `${pick(LINK_INTROS, random)} {link}`,
+    link: `${pick(LINK_WARM, random)}, ${pick(LINK_DELIVERY, random)} {link}`,
   };
 }
 

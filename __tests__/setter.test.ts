@@ -3,7 +3,7 @@
  * time zones and free times, echoes, page text and the turn prompt.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { humanize, describeAttachment } from "../lib/setter/text";
+import { humanize, describeAttachment, splitLink } from "../lib/setter/text";
 import { replyDelayMs, typingDelayMs } from "../lib/setter/timing";
 import { setterAllowsUser, setterAudios } from "../lib/setter/config";
 import { freeSlots, zonedToUtc, isValidTimeZone, withinOwnerHours } from "../lib/setter/calendar";
@@ -248,8 +248,23 @@ describe("turn prompt", () => {
     expect(openers.size).toBeGreaterThan(30);
     expect(wording(() => 0)).toEqual({
       opener: "buenas! vi que comentaste el reel de [tema del reel], te lo paso?",
-      link: "dale, aca lo tenes: {link}",
+      link: "buenisimo que te estes metiendo con esto, te lo dejo aca abajo, metele que te va a servir {link}",
     });
+    const links = new Set(Array.from({ length: 80 }, () => wording().link));
+    expect(links.size).toBeGreaterThan(25);
+  });
+
+  it("takes the link out of the text, for the button under it", () => {
+    expect(splitLink("que bueno que te interese el tema, te lo dejo aca abajo https://link.x.com/r/AbC/1f2e")).toEqual({
+      text: "que bueno que te interese el tema, te lo dejo aca abajo",
+      url: "https://link.x.com/r/AbC/1f2e",
+    });
+    expect(splitLink("ahi va: https://x.vercel.app/r/AbC y contame")).toEqual({
+      text: "ahi va y contame",
+      url: "https://x.vercel.app/r/AbC",
+    });
+    expect(splitLink("https://x.vercel.app/r/AbC")?.text).toBe("te lo dejo aca abajo");
+    expect(splitLink("una pregunta, es para tu negocio?")).toBeNull();
   });
 });
 
