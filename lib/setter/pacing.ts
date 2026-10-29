@@ -64,6 +64,7 @@ export function withinReplyWindow(lastUserAt: Date | null, now: number): boolean
 const pauseKey = (instagramId: string) => `setter:paused:${instagramId}`;
 const slotKey = (instagramId: string) => `setter:next:${instagramId}`;
 const heldSlotKey = (conversationId: string) => `setter:slot:${conversationId}`;
+const priorityKey = (instagramId: string) => `setter:priority:${instagramId}`;
 
 /** Stops the setter's sends for this account. True if it was not paused already. */
 export async function pauseSending(instagramId: string, now = Date.now()): Promise<boolean> {
@@ -110,4 +111,53 @@ export async function reserveSlot(instagramId: string, now = Date.now(), convers
     String(holdUntil())
   );
   return Number(result);
+}
+
+/**
+ * The line goes in the order people wrote, but someone worth a call (quota.ts
+ * isPriority: a business, a professional, someone at the pitch or booking)
+ * should not wait behind dozens asking for a free resource: on 29/10, with
+ * ~110 waiting after a viral reel, someone picking a time for the call had
+ * their answer set 7 h later. So a priority answer waiting for its turn is
+ * listed here, and when an ordinary answer's turn comes it hands its turn
+ * over and takes the later one instead. Same number of sends, same spacing:
+ * only the order changes.
+ */
+export async function listPriorityTurn(instagramId: string, jobId: string, slotAt: number): Promise<void> {
+  const redis = getRedisConnection();
+  await redis.zadd(priorityKey(instagramId), slotAt, jobId);
+  await redis.pexpire(priorityKey(instagramId), Math.max(0, slotAt - Date.now()) + 24 * 3600_000);
+}
+
+export async function unlistPriorityTurn(instagramId: string, jobId: string): Promise<void> {
+  await getRedisConnection().zrem(priorityKey(instagramId), jobId);
+}
+
+/**
+ * The listed priority turns at least `minAhead` ms after `now`, earliest
+ * first (stale ones, already past, are dropped).
+ */
+export async function priorityTurnsAhead(
+  instagramId: string,
+  now = Date.now(),
+  minAhead = 60_000
+): Promise<{ jobId: string; slotAt: number }[]> {
+  const redis = getRedisConnection();
+  await redis.zremrangebyscore(priorityKey(instagramId), "-inf", now - 3600_000);
+  const raw = await redis.zrangebyscore(priorityKey(instagramId), now + minAhead, "+inf", "WITHSCORES", "LIMIT", 0, 5);
+  const turns: { jobId: string; slotAt: number }[] = [];
+  for (let i = 0; i < raw.length; i += 2) turns.push({ jobId: raw[i], slotAt: Number(raw[i + 1]) });
+  return turns;
+}
+
+/** Takes a listed priority turn for oneself. False if another answer took it first. */
+export async function claimPriorityTurn(instagramId: string, jobId: string): Promise<boolean> {
+  return (await getRedisConnection().zrem(priorityKey(instagramId), jobId)) === 1;
+}
+
+/** `conversationId` now holds the moment `slotAt` (and `fromConversationId` no longer does). */
+export async function moveHeldSlot(fromConversationId: string, conversationId: string, slotAt: number): Promise<void> {
+  const redis = getRedisConnection();
+  await redis.del(heldSlotKey(fromConversationId));
+  await redis.set(heldSlotKey(conversationId), String(slotAt), "PX", Math.max(1, slotAt - Date.now()) + 3600_000);
 }

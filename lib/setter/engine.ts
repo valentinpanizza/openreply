@@ -53,7 +53,19 @@ import { describeAttachment, humanize, splitLink } from "./text";
 import { transcribeAudio } from "./transcribe";
 import { forbiddenOutput, looksLikeInjection } from "./guard";
 import { replyDelayMs, typingDelayMs } from "./timing";
-import { isRateLimited, pauseSending, pausedUntil, rateLimitPauseMs, reserveSlot, withinReplyWindow } from "./pacing";
+import {
+  claimPriorityTurn,
+  isRateLimited,
+  listPriorityTurn,
+  moveHeldSlot,
+  pauseSending,
+  pausedUntil,
+  priorityTurnsAhead,
+  rateLimitPauseMs,
+  reserveSlot,
+  unlistPriorityTurn,
+  withinReplyWindow,
+} from "./pacing";
 import { dailyReplyCap, fitOf, isPriority, nextMorning, overReplyCap, recordReplies, rememberFit } from "./quota";
 import { chatLink, notifyOwner, setterButtons } from "./notify";
 import { callPrepPrompt } from "./prep";
@@ -480,7 +492,8 @@ async function scheduleReply(
   delay: number,
   retry = 0,
   wait?: { slotAt?: number; waits: number }
-) {
+): Promise<string> {
+  const jobId = `setter_reply_${conversation.id}_${Buffer.from(token).toString("base64url")}_${retry}${wait ? `_w${wait.waits}` : ""}`;
   await getRedisConnection().set(tokenKey(conversation.id), token, "EX", 24 * 3600);
   await getDMQueue().add(
     SETTER_REPLY_JOB_NAME,
@@ -494,12 +507,13 @@ async function scheduleReply(
     },
     {
       delay,
-      jobId: `setter_reply_${conversation.id}_${Buffer.from(token).toString("base64url")}_${retry}${wait ? `_w${wait.waits}` : ""}`,
+      jobId,
       attempts: 1,
       removeOnComplete: true,
       removeOnFail: { age: 3600 },
     }
   );
+  return jobId;
 }
 
 /**
@@ -654,10 +668,37 @@ async function waitForTurn(
     );
     return;
   }
-  await scheduleReply(conversation, data, token, Math.max(0, slotAt - Date.now()), data.retry ?? 0, {
+  const jobId = await scheduleReply(conversation, data, token, Math.max(0, slotAt - Date.now()), data.retry ?? 0, {
     slotAt,
     waits: (data.waits ?? 0) + 1,
   });
+  if (isPriority(conversation, await fitOf(conversation.id))) {
+    await listPriorityTurn(data.instagramAccountId, jobId, slotAt);
+  }
+}
+
+/**
+ * An ordinary answer whose turn came gives it to a priority answer waiting
+ * further back (see pacing.ts), and waits for that one's turn instead. True
+ * if it did.
+ */
+async function giveTurnToPriority(conversation: Conversation, data: SetterReplyJob, token: string): Promise<boolean> {
+  const instagramId = data.instagramAccountId;
+  for (const turn of await priorityTurnsAhead(instagramId)) {
+    // Not if that would take this answer past Instagram's 24 h window.
+    if (!withinReplyWindow(conversation.lastUserAt, turn.slotAt)) return false;
+    if (!(await claimPriorityTurn(instagramId, turn.jobId))) continue;
+    const other = await getDMQueue().getJob(turn.jobId);
+    const waiting = other?.data as SetterReplyJob | undefined;
+    if (!other || !waiting || !(await other.isDelayed()) || !(await stillCurrent(waiting.conversationId, waiting.token))) {
+      continue;
+    }
+    await other.promote();
+    await moveHeldSlot(waiting.conversationId, conversation.id, turn.slotAt);
+    await waitForTurn(conversation, data, token, turn.slotAt);
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -777,7 +818,8 @@ export async function processSetterReply(job: Job<SetterReplyJob>): Promise<void
     conversation = await prisma.setterConversation.findUnique({ where: { id: conversationId } });
     if (!conversation) return;
 
-    if ((await overReplyCap()) && !isPriority(conversation, await fitOf(conversationId))) {
+    const priority = isPriority(conversation, await fitOf(conversationId));
+    if ((await overReplyCap()) && !priority) {
       await deferToMorning(conversation, job.data, token);
       return;
     }
@@ -786,6 +828,7 @@ export async function processSetterReply(job: Job<SetterReplyJob>): Promise<void
     // another answer just went out. One that already waited keeps its turn,
     // and so does a newer message from someone already waiting for one.
     const instagramId = job.data.instagramAccountId;
+    if (job.id) await unlistPriorityTurn(instagramId, job.id);
     if (!job.data.slotAt || (await pausedUntil(instagramId)) > Date.now()) {
       const slotAt = await reserveSlot(instagramId, Date.now(), conversationId);
       if (slotAt > Date.now() + 1000) {
@@ -793,6 +836,7 @@ export async function processSetterReply(job: Job<SetterReplyJob>): Promise<void
         return;
       }
     }
+    if (!priority && (await giveTurnToPriority(conversation, job.data, token))) return;
 
     if (!(await budgetLeft())) {
       await handOver(conversation, "Se terminó el presupuesto diario del setter (SETTER_DAILY_BUDGET_USD).");
