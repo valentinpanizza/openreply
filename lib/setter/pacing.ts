@@ -63,6 +63,7 @@ export function withinReplyWindow(lastUserAt: Date | null, now: number): boolean
 
 const pauseKey = (instagramId: string) => `setter:paused:${instagramId}`;
 const slotKey = (instagramId: string) => `setter:next:${instagramId}`;
+const heldSlotKey = (conversationId: string) => `setter:slot:${conversationId}`;
 
 /** Stops the setter's sends for this account. True if it was not paused already. */
 export async function pauseSending(instagramId: string, now = Date.now()): Promise<boolean> {
@@ -80,19 +81,30 @@ export async function pausedUntil(instagramId: string): Promise<number> {
  * Takes the next free moment to send for this account (after the pause and
  * after the last one taken) and returns it. The caller sends then (now, when
  * it is now) and nobody else gets that moment.
+ * With `conversationId`, a conversation that already holds a moment still
+ * ahead keeps it: someone who writes again while waiting would otherwise go
+ * to the back of the line and leave a hole where their old turn was (29/10:
+ * after the 24 h pause, 52 such holes left the setter silent for 4 h).
  */
-export async function reserveSlot(instagramId: string, now = Date.now()): Promise<number> {
+export async function reserveSlot(instagramId: string, now = Date.now(), conversationId?: string): Promise<number> {
   const result = await getRedisConnection().eval(
     `local paused = tonumber(redis.call('GET', KEYS[1]) or '0') or 0
      local free = tonumber(redis.call('GET', KEYS[2]) or '0') or 0
      local now = tonumber(ARGV[1])
-     local slot = math.max(now, paused, free, tonumber(ARGV[3]))
+     local hold = tonumber(ARGV[3])
+     if KEYS[3] ~= '' then
+       local held = tonumber(redis.call('GET', KEYS[3]) or '0') or 0
+       if held >= now and held >= paused and held >= hold then return tostring(held) end
+     end
+     local slot = math.max(now, paused, free, hold)
      local after = slot + tonumber(ARGV[2])
      redis.call('SET', KEYS[2], tostring(after), 'PX', after - now + 3600000)
+     if KEYS[3] ~= '' then redis.call('SET', KEYS[3], tostring(slot), 'PX', slot - now + 3600000) end
      return tostring(slot)`,
-    2,
+    3,
     pauseKey(instagramId),
     slotKey(instagramId),
+    conversationId ? heldSlotKey(conversationId) : "",
     String(now),
     String(jittered(replySpacingMs())),
     String(holdUntil())

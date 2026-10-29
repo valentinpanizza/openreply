@@ -777,10 +777,11 @@ export async function processSetterReply(job: Job<SetterReplyJob>): Promise<void
     }
 
     // Its turn to send: right away, unless Instagram has the setter paused or
-    // another answer just went out. One that already waited keeps its turn.
+    // another answer just went out. One that already waited keeps its turn,
+    // and so does a newer message from someone already waiting for one.
     const instagramId = job.data.instagramAccountId;
     if (!job.data.slotAt || (await pausedUntil(instagramId)) > Date.now()) {
-      const slotAt = await reserveSlot(instagramId);
+      const slotAt = await reserveSlot(instagramId, Date.now(), conversationId);
       if (slotAt > Date.now() + 1000) {
         await waitForTurn(conversation, job.data, token, slotAt);
         return;
