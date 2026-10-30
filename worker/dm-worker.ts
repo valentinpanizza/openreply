@@ -6,6 +6,7 @@ import { runTrialPublisher } from "@/lib/trials/publisher";
 import { runCarouselPublisher } from "@/lib/carousels/publisher";
 import { syncSetterEchoesFlag } from "@/lib/setter/engine";
 import { pollSetterCommands } from "@/lib/setter/commands";
+import { maybeSendDayReport } from "@/lib/setter/report";
 import os from "node:os";
 
 const worker = createDMWorker();
@@ -118,11 +119,26 @@ async function setterCommandsTick() {
 
 const setterCommandsTimer = setInterval(() => void setterCommandsTick(), SETTER_COMMANDS_MS);
 
+// The setter's funnel for the day, to the owner's phone at night (lib/setter/report.ts).
+const SETTER_REPORT_MS = 5 * 60_000;
+
+async function setterReportTick() {
+  try {
+    await maybeSendDayReport();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    console.error("[DM Worker] Setter report failed:", message);
+  }
+}
+
+const setterReportTimer = setInterval(() => void setterReportTick(), SETTER_REPORT_MS);
+
 async function shutdown(signal: string) {
   console.log(`[DM Worker] ${signal} received, closing worker`);
   clearInterval(heartbeatTimer);
   clearInterval(pollTimer);
   clearInterval(trialTimer);
+  clearInterval(setterReportTimer);
   clearInterval(carouselTimer);
   clearInterval(setterCommandsTimer);
   await worker.close();

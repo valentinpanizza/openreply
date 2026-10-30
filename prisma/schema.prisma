@@ -464,6 +464,10 @@ model SetterConversation {
   callAt             DateTime?
   eventId            String?
   resourceSentAt     DateTime?
+  // negocio, profesional or no (the model's last word on it; lib/setter/quota.ts).
+  fit                String?
+  // When the call was booked (callAt is when it happens).
+  bookedAt           DateTime?
   statusReason       String?
   lastUserAt         DateTime?
   lastBotAt          DateTime?

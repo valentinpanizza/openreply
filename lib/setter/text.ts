@@ -53,6 +53,26 @@ const TRACKED_LINK = /\s*:?\s*(https?:\/\/\S+\/r\/\S+)/;
 export function splitLink(message: string): { text: string; url: string } | null {
   const link = message.match(TRACKED_LINK);
   if (!link) return null;
-  const text = message.replace(TRACKED_LINK, " ").replace(/\s+/g, " ").trim();
+  const text = message
+    .replace(TRACKED_LINK, " ")
+    .replace(/[^\S\n]+/g, " ")
+    .replace(/ ?\n ?/g, "\n")
+    .trim();
   return { text: text || "te lo dejo aca abajo", url: link[1] };
+}
+
+// Instagram's button template takes up to 640 characters of text.
+const MAX_JOINED = 600;
+
+/**
+ * A turn's messages as one message, one line each: every send counts for
+ * Instagram's cap (368), and at 1.7 sends per answer (28/10) splitting them
+ * cost almost half the answers the setter could give at the same pace. With
+ * a link anywhere the whole text goes above the button. Too long for one,
+ * they stay as they are.
+ */
+export function joinMessages(messages: string[]): string[] {
+  if (messages.length < 2) return messages;
+  const joined = messages.join("\n");
+  return joined.length <= MAX_JOINED ? [joined] : messages;
 }

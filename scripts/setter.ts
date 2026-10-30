@@ -18,6 +18,8 @@
  *                                                  them back (they go out one at
  *                                                  a time)
  *   npx tsx scripts/setter.ts cost                 today's spend and the cap
+ *   npx tsx scripts/setter.ts report [YYYY-MM-DD]  the day's funnel (the one
+ *                                                  sent every night)
  *   npx tsx scripts/setter.ts exclude <usuario>    never use the setter with them
  *   npx tsx scripts/setter.ts include <usuario>    undo that
  *   npx tsx scripts/setter.ts excluded             who is excluded
@@ -30,6 +32,7 @@ import { getRedisConnection } from "@/lib/queue/client";
 import { setterDailyBudgetUsd, ownerTimeZone } from "@/lib/setter/config";
 import { spentToday } from "@/lib/setter/budget";
 import { SETTER_EXCLUDED_KEY, callPrep, resumeSetter, silenceSetter } from "@/lib/setter/engine";
+import { dayReport, formatReport } from "@/lib/setter/report";
 
 const fmt = (at: Date | null) =>
   at
@@ -123,6 +126,11 @@ async function main() {
       if (go) await resumeSetter(c);
     }
     console.log(go ? `\n${count} charlas retomadas: salen de a una.` : `\n${count} para retomar (rescue --go para hacerlo).`);
+    return;
+  }
+
+  if (command === "report") {
+    console.log(formatReport(await dayReport(arg)));
     return;
   }
 

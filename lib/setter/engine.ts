@@ -49,7 +49,7 @@ import {
   zonedToUtc,
 } from "./calendar";
 import { reelContext, type ReelCampaign } from "./context";
-import { describeAttachment, humanize, splitLink } from "./text";
+import { describeAttachment, humanize, joinMessages, splitLink } from "./text";
 import { transcribeAudio } from "./transcribe";
 import { forbiddenOutput, looksLikeInjection } from "./guard";
 import { replyDelayMs, typingDelayMs } from "./timing";
@@ -266,7 +266,7 @@ function slotTools(conversation: Conversation, campaign: Awaited<ReturnType<type
       });
       const updated = await prisma.setterConversation.update({
         where: { id: conversation.id },
-        data: { callAt: start, eventId: event.id, email, timezone: args.zona_horaria, phase: "agendado" },
+        data: { callAt: start, bookedAt: new Date(), eventId: event.id, email, timezone: args.zona_horaria, phase: "agendado" },
       });
       Object.assign(conversation, updated);
       await afterBooking(updated, campaign, start);
@@ -873,7 +873,7 @@ export async function processSetterReply(job: Job<SetterReplyJob>): Promise<void
       return;
     }
     let firstCost: number | null = costUsd;
-    for (const [index, text] of messages.entries()) {
+    for (const [index, text] of joinMessages(messages).entries()) {
       if (index > 0) {
         await sleep(typingDelayMs(text));
         if (!(await stillCurrent(conversationId, token))) break;
@@ -950,6 +950,7 @@ export async function processSetterReply(job: Job<SetterReplyJob>): Promise<void
         phase: conversation.callAt && decision.phase !== "cierre" ? "agendado" : decision.phase,
         notes: decision.notes,
         timezone,
+        ...(decision.fit && decision.fit !== "no_se" ? { fit: decision.fit } : {}),
         ...(sentSomething ? { lastBotAt: new Date() } : {}),
         ...(sentResource ? { resourceSentAt: new Date() } : {}),
       },

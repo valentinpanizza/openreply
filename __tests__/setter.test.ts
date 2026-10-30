@@ -3,7 +3,8 @@
  * time zones and free times, echoes, page text and the turn prompt.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { humanize, describeAttachment, splitLink } from "../lib/setter/text";
+import { humanize, describeAttachment, joinMessages, splitLink } from "../lib/setter/text";
+import { formatMinutes, formatReport, reportHour } from "../lib/setter/report";
 import { replyDelayMs, typingDelayMs } from "../lib/setter/timing";
 import { setterAllowsUser, setterAudios } from "../lib/setter/config";
 import { freeSlots, zonedToUtc, isValidTimeZone, withinOwnerHours } from "../lib/setter/calendar";
@@ -265,6 +266,61 @@ describe("turn prompt", () => {
     });
     expect(splitLink("https://x.vercel.app/r/AbC")?.text).toBe("te lo dejo aca abajo");
     expect(splitLink("una pregunta, es para tu negocio?")).toBeNull();
+  });
+
+  it("keeps the lines of a joined answer above the button", () => {
+    expect(splitLink("aca abajo lo tenes https://x.com/r/AbC/1\nuna pregunta, es para tu negocio?")).toEqual({
+      text: "aca abajo lo tenes\nuna pregunta, es para tu negocio?",
+      url: "https://x.com/r/AbC/1",
+    });
+  });
+});
+
+describe("joining an answer's messages", () => {
+  it("sends one message, a line each", () => {
+    expect(joinMessages(["buenisimo", "y a que te dedicas?"])).toEqual(["buenisimo\ny a que te dedicas?"]);
+    expect(joinMessages(["uno solo"])).toEqual(["uno solo"]);
+    expect(joinMessages([])).toEqual([]);
+  });
+
+  it("leaves them apart when one would be too long for the button", () => {
+    const long = ["x".repeat(400), "y".repeat(300)];
+    expect(joinMessages(long)).toEqual(long);
+  });
+});
+
+describe("daily report", () => {
+  it("goes out at 23 unless told otherwise, and can be turned off", () => {
+    expect(reportHour()).toBe(23);
+    vi.stubEnv("SETTER_REPORT_HOUR", "21");
+    expect(reportHour()).toBe(21);
+    vi.stubEnv("SETTER_REPORT_HOUR", "off");
+    expect(reportHour()).toBeNull();
+  });
+
+  it("reads like a summary", () => {
+    expect(formatMinutes(5)).toBe("5 min");
+    expect(formatMinutes(433)).toBe("7 h 13 min");
+    expect(formatMinutes(120)).toBe("2 h");
+    const text = formatReport({
+      day: "2026-10-29",
+      opened: 733,
+      answered: 148,
+      resource: 61,
+      fits: { negocio: 4, profesional: 2, no: 10, unknown: 132 },
+      pitch: 1,
+      booked: 0,
+      handedOver: 3,
+      quiet: 11,
+      quietByPhase: { cierre: 4, situacion: 7 },
+      waitMedianMin: 433,
+      waitP90Min: 600,
+      unanswered: 95,
+    });
+    expect(text).toContain("Día 29/10");
+    expect(text).toContain("negocio 4, profesional 2, aprendiendo 10, sin saber 132");
+    expect(text).toContain("Se colgaron (24 h sin contestar): 11 (situación 7, cierre 4)");
+    expect(text).toContain("mediana 7 h 13 min");
   });
 });
 
