@@ -311,6 +311,7 @@ describe("daily report", () => {
       pitch: 1,
       booked: 0,
       handedOver: 3,
+      noReply: 205,
       quiet: 11,
       quietByPhase: { cierre: 4, situacion: 7 },
       waitMedianMin: 433,
@@ -319,7 +320,8 @@ describe("daily report", () => {
     });
     expect(text).toContain("Día 29/10");
     expect(text).toContain("negocio 4, profesional 2, aprendiendo 10, sin saber 132");
-    expect(text).toContain("Se colgaron (24 h sin contestar): 11 (situación 7, cierre 4)");
+    expect(text).toContain("No contestaron el primer mensaje (24 h): 205");
+    expect(text).toContain("Se colgaron a mitad de charla (24 h): 11 (situación 7, cierre 4)");
     expect(text).toContain("mediana 7 h 13 min");
   });
 });

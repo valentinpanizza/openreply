@@ -23,6 +23,9 @@ export interface DayReport {
   pitch: number;
   booked: number;
   handedOver: number;
+  // Never answered the first message (the setter spoke last, still at the opener).
+  noReply: number;
+  // Went quiet further on, by the phase they stopped at.
   quiet: number;
   quietByPhase: Record<string, number>;
   waitMedianMin: number | null;
@@ -113,7 +116,9 @@ export async function dayReport(day = ownerDay(Date.now())): Promise<DayReport> 
   const answered = n(counts.answered);
   const fits = { negocio: n(counts.negocio), profesional: n(counts.profesional), no: n(counts.no), unknown: 0 };
   fits.unknown = Math.max(0, answered - fits.negocio - fits.profesional - fits.no);
-  const quietByPhase = Object.fromEntries(quietRows.map((row) => [row.phase, n(row.n)]));
+  const quietByPhase = Object.fromEntries(
+    quietRows.filter((row) => row.phase !== "abridor").map((row) => [row.phase, n(row.n)])
+  );
   return {
     day,
     opened: n(counts.opened),
@@ -123,6 +128,7 @@ export async function dayReport(day = ownerDay(Date.now())): Promise<DayReport> 
     pitch: n(counts.pitch),
     booked: n(counts.booked),
     handedOver: n(counts.handed),
+    noReply: n(quietRows.find((row) => row.phase === "abridor")?.n),
     quiet: Object.values(quietByPhase).reduce((a, b) => a + b, 0),
     quietByPhase,
     waitMedianMin: wait?.median == null ? null : Math.round(Number(wait.median)),
@@ -132,7 +138,6 @@ export async function dayReport(day = ownerDay(Date.now())): Promise<DayReport> 
 }
 
 const PHASES: Record<string, string> = {
-  abridor: "abridor",
   situacion: "situación",
   obstaculo: "obstáculo",
   pitch: "pitch",
@@ -158,11 +163,12 @@ export function formatReport(report: DayReport): string {
     `Día ${date}/${month}`,
     `Charlas nuevas: ${report.opened}`,
     `Contestaron: ${report.answered}`,
+    `No contestaron el primer mensaje (24 h): ${report.noReply}`,
     `Recibieron el recurso: ${report.resource}`,
     `De los que contestaron: negocio ${report.fits.negocio}, profesional ${report.fits.profesional}, aprendiendo ${report.fits.no}, sin saber ${report.fits.unknown}`,
     `Llegaron al pitch: ${report.pitch}`,
     `Agendaron llamada: ${report.booked}`,
-    `Se colgaron (24 h sin contestar): ${report.quiet}${quiet ? ` (${quiet})` : ""}`,
+    `Se colgaron a mitad de charla (24 h): ${report.quiet}${quiet ? ` (${quiet})` : ""}`,
     `Pasadas a vos: ${report.handedOver}`,
     `Espera hasta la respuesta: mediana ${formatMinutes(report.waitMedianMin)}, 9 de cada 10 en menos de ${formatMinutes(report.waitP90Min)}${report.unanswered ? ` (${report.unanswered} todavía sin respuesta)` : ""}`,
   ].join("\n");
