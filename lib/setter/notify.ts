@@ -25,6 +25,14 @@ export function chatLink(username: string | null | undefined): string {
   return username ? `https://ig.me/m/${username}` : "https://www.instagram.com/direct/inbox/";
 }
 
+/** Where the owner answers this conversation. */
+export function conversationLink(conversation: { channel?: string; username: string | null }): string {
+  if (conversation.channel === "facebook") {
+    return `https://business.facebook.com/latest/inbox/messenger?asset_id=${process.env.FB_PAGE_ID ?? ""}`;
+  }
+  return chatLink(conversation.username);
+}
+
 export function ntfyBase(): string {
   return (process.env.NTFY_URL ?? "https://ntfy.sh").replace(/\/+$/, "");
 }

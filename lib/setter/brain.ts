@@ -198,6 +198,7 @@ export interface TurnInput {
   mode: "abridor" | "charla";
   reel: string;
   username: string | null;
+  channel?: string;
   phase: string;
   notes: string | null;
   timezone: string | null;
@@ -314,6 +315,9 @@ export function buildTurnPrompt(input: TurnInput): string {
   }).format(input.now);
 
   const person = [
+    ...(input.channel === "facebook"
+      ? ["canal: facebook messenger. comentó el reel en facebook y la charla es por messenger, no por instagram."]
+      : []),
     `usuario: ${input.username ? `@${input.username}` : "(sin usuario)"}`,
     `zona horaria: ${input.timezone ?? "no la sabés todavía"}`,
     `mail: ${input.email ?? "no lo tenés"}`,

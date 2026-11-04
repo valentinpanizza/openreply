@@ -4,7 +4,7 @@ import {
   parseCommentEvents,
   verifyWebhookSignature,
 } from "@/lib/meta/webhook";
-import { processInstagramWebhook } from "@/lib/queue/process-webhook";
+import { processInstagramWebhook, processPageWebhook } from "@/lib/queue/process-webhook";
 
 
 export async function GET(request: NextRequest) {
@@ -61,22 +61,11 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // Facebook Page events (Messenger): not handled yet, kept so they can be read.
-  if ((payload as { object?: unknown }).object === "page") {
-    await prisma.operationalEvent
-      .create({
-        data: {
-          source: "SYSTEM",
-          level: "INFO",
-          message: "Facebook Page webhook",
-          payload: { bodyPreview: rawBody.slice(0, 1500) },
-        },
-      })
-      .catch(() => {});
-    return NextResponse.json({ success: true });
-  }
-
   try {
+    if ((payload as { object?: unknown }).object === "page") {
+      await processPageWebhook(payload);
+      return NextResponse.json({ success: true });
+    }
     await processInstagramWebhook({ payload: payload as Parameters<typeof parseCommentEvents>[0], provider: 'META' });
     return NextResponse.json({ success: true });
   } catch {

@@ -11,14 +11,15 @@ import { freeSlots, zonedToUtc, isValidTimeZone, withinOwnerHours } from "../lib
 import { costUsd } from "../lib/setter/budget";
 import { pageText } from "../lib/setter/context";
 import { buildTurnPrompt, wording, parseDecision, type TurnInput } from "../lib/setter/brain";
-import { parseEchoEvents, parseMessageEvents } from "../lib/meta/webhook";
+import { parseEchoEvents, parseMessageEvents, parsePageEvents } from "../lib/meta/webhook";
+import { facebookPacingKey, firstUrl, pickCampaign, urlVariants } from "../lib/setter/facebook";
 import { forbiddenOutput, looksLikeInjection } from "../lib/setter/guard";
 import { transcribeAudio } from "../lib/setter/transcribe";
 import { callPrepPrompt, type PrepInput } from "../lib/setter/prep";
 import { setterButtons } from "../lib/setter/notify";
 import { parseCommand } from "../lib/setter/commands";
 import { holdUntil, isRateLimited, jittered, pauseEnd, rateLimitPauseMs, replySpacingMs, withinReplyWindow } from "../lib/setter/pacing";
-import { sendDirectMessage } from "../lib/meta/client";
+import { sendDirectMessage, sendPageLinkButton, sendPageText } from "../lib/meta/client";
 import { dailyReplyCap, isPriority, nextMorning } from "../lib/setter/quota";
 
 afterEach(() => {
@@ -609,5 +610,93 @@ describe("send cap", () => {
     expect(withinReplyWindow(new Date(now - 3600_000), now)).toBe(true);
     expect(withinReplyWindow(new Date(now - 23 * 3600_000), now)).toBe(false);
     expect(withinReplyWindow(null, now)).toBe(false);
+  });
+});
+
+describe("the setter on the Facebook Page", () => {
+  const message = (fields: object) => ({
+    object: "page",
+    entry: [{ id: "PAGE", messaging: [{ sender: { id: "PERSON" }, recipient: { id: "PAGE" }, ...fields }] }],
+  });
+
+  it("reads a message from the person", () => {
+    expect(parsePageEvents(message({ message: { mid: "m1", text: "soy coco" } }))).toEqual([
+      { pageId: "PAGE", kind: "message", userId: "PERSON", messageId: "m1", messageText: "soy coco" },
+    ]);
+  });
+
+  it("reads an echo as going to the person, with the app that sent it", () => {
+    const [event] = parsePageEvents({
+      object: "page",
+      entry: [
+        {
+          id: "PAGE",
+          messaging: [
+            {
+              sender: { id: "PAGE" },
+              recipient: { id: "PERSON" },
+              message: { mid: "m2", text: "hola", is_echo: true, app_id: 123 },
+            },
+          ],
+        },
+      ],
+    });
+    expect(event).toMatchObject({ kind: "echo", userId: "PERSON", appId: "123" });
+  });
+
+  it("takes a sticker as text and a voice note as an attachment", () => {
+    const sticker = { attachments: [{ type: "image", payload: { url: "u", sticker_id: 369 } }] };
+    expect(parsePageEvents(message({ message: { mid: "m3", ...sticker } }))[0]).toEqual({
+      pageId: "PAGE",
+      kind: "message",
+      userId: "PERSON",
+      messageId: "m3",
+      messageText: "[mandó un sticker]",
+    });
+    const audio = { attachments: [{ type: "audio", payload: { url: "https://a/b.mp4" } }] };
+    expect(parsePageEvents(message({ message: { mid: "m4", ...audio } }))[0]).toMatchObject({
+      attachmentType: "audio",
+      attachmentUrl: "https://a/b.mp4",
+      messageText: "",
+    });
+  });
+
+  it("ignores Instagram payloads and events that are not messages", () => {
+    expect(parsePageEvents({ object: "instagram", entry: [] })).toEqual([]);
+    expect(parsePageEvents(message({ read: { watermark: 1 } }))).toEqual([]);
+  });
+
+  it("finds the link in the first message", () => {
+    expect(firstUrl("¡buenas! acá tenés 👉 https://x.dev/tv/ ¿a qué te dedicás?")).toBe("https://x.dev/tv/");
+    expect(firstUrl("mirá https://x.dev/tv.")).toBe("https://x.dev/tv");
+    expect(firstUrl("sin link")).toBeNull();
+    expect(urlVariants("https://x.dev/tv/")).toEqual(["https://x.dev/tv", "https://x.dev/tv/"]);
+  });
+
+  it("prefers the main active campaign among those sharing a resource", () => {
+    const c = (name: string, isActive: boolean, day: number) => ({ name, isActive, createdAt: new Date(2026, 9, day) });
+    const main = c("Harvey", true, 20);
+    expect(pickCampaign([c("[TRIAL4] Harvey", true, 30), main, c("Vieja", false, 25)])).toBe(main);
+    expect(pickCampaign([])).toBeNull();
+  });
+
+  it("paces the Page apart from Instagram", () => {
+    expect(facebookPacingKey("123")).toBe("fb:123");
+  });
+
+  it("sends through the Page with the real client, and a 368 reads as the rate limit", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ recipient_id: "P", message_id: "m" })));
+    vi.stubGlobal("fetch", fetchMock);
+    await sendPageLinkButton("TOKEN", "P", "acá va", [{ title: "Abrir", url: "https://x.dev/r/a" }]);
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toMatch(/graph\.facebook\.com\/.*\/me\/messages$/);
+    expect(JSON.parse(String(init.body))).toMatchObject({
+      messaging_type: "RESPONSE",
+      recipient: { id: "P" },
+      message: { attachment: { payload: { template_type: "button", text: "acá va" } } },
+    });
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ error: { code: 368, message: "no" } }), { status: 400 }));
+    await expect(sendPageText("TOKEN", "P", "hola")).rejects.toSatisfy(isRateLimited);
+    vi.unstubAllGlobals();
   });
 });

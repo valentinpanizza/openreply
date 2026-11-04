@@ -10,6 +10,7 @@ import {
   LEAD_AUDIO_JOB_NAME,
   OPENING_DM_READ_FALLBACK_WINDOW_MS,
   SETTER_ECHO_JOB_NAME,
+  SETTER_FACEBOOK_JOB_NAME,
   SETTER_REMINDER_JOB_NAME,
   SETTER_REPLY_JOB_NAME,
   type DmQueueJob,
@@ -20,11 +21,13 @@ import {
   type NotifyLeadJob,
   type LeadAudioJob,
   type SetterEchoJob,
+  type SetterFacebookJob,
   type SetterReminderJob,
   type SetterReplyJob,
 } from "./client";
 import {
   processSetterEcho,
+  processSetterFacebook,
   processSetterReminder,
   processSetterReply,
   recordSetterOpening,
@@ -2460,6 +2463,9 @@ async function dispatchJob(job: Job<DmQueueJob>): Promise<void> {
   }
   if (job.name === SETTER_ECHO_JOB_NAME) {
     return processSetterEcho(job as Job<SetterEchoJob>);
+  }
+  if (job.name === SETTER_FACEBOOK_JOB_NAME) {
+    return processSetterFacebook(job as Job<SetterFacebookJob>);
   }
   if (job.name === SETTER_REMINDER_JOB_NAME) {
     return processSetterReminder(job as Job<SetterReminderJob>);

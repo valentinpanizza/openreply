@@ -9,6 +9,7 @@ import {
   SETTER_REPLY_JOB_NAME,
   type ProcessMessageJob,
   type SetterEchoJob,
+  type SetterFacebookJob,
   type SetterReminderJob,
   type SetterReplyJob,
 } from "@/lib/queue/client";
@@ -21,6 +22,7 @@ import {
   sendDirectMessageWithLinkButton,
   type InstagramContext,
 } from "@/lib/instagram/provider";
+import { sendPageAudio, sendPageLinkButton, sendPageText } from "@/lib/meta/client";
 import { renderMessageWithTracking } from "@/lib/tracking/message";
 import type { SetterConversation } from "@/app/generated/prisma/client";
 import {
@@ -67,7 +69,17 @@ import {
   withinReplyWindow,
 } from "./pacing";
 import { dailyReplyCap, fitOf, isPriority, nextMorning, overReplyCap, recordReplies, rememberFit } from "./quota";
-import { chatLink, notifyOwner, setterButtons } from "./notify";
+import { conversationLink, notifyOwner, setterButtons } from "./notify";
+import {
+  FACEBOOK_CHANNEL,
+  SETTER_FACEBOOK_FLAG,
+  facebookAllowsUser,
+  facebookPacingKey,
+  facebookSetterEnabled,
+  firstUrl,
+  pickCampaign,
+  urlVariants,
+} from "./facebook";
 import { callPrepPrompt } from "./prep";
 
 /**
@@ -86,6 +98,24 @@ const LOCK_MS = 3 * 60_000;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 type Conversation = SetterConversation;
+
+const onFacebook = (conversation: Conversation) => conversation.channel === FACEBOOK_CHANNEL;
+
+/** The key this conversation's sends are paced under (pacing.ts). */
+function pacingKey(conversation: Conversation, instagramId: string): string {
+  return onFacebook(conversation) ? facebookPacingKey() : instagramId;
+}
+
+function pageToken(): string {
+  const token = process.env.FB_PAGE_TOKEN;
+  if (!token) throw new Error("FB_PAGE_TOKEN is not set");
+  return token;
+}
+
+function whoIs(conversation: Conversation, otherwise: string): string {
+  if (conversation.username) return `@${conversation.username}`;
+  return onFacebook(conversation) ? `${otherwise} de Facebook` : otherwise;
+}
 
 function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -190,7 +220,8 @@ async function resourceSentFor(
   conversation: Conversation,
   campaign: Awaited<ReturnType<typeof campaignFor>>
 ): Promise<boolean> {
-  if (!campaign) return Boolean(conversation.resourceSentAt);
+  // On Facebook the first message carries the link, and there are no reveal rows.
+  if (!campaign || onFacebook(conversation)) return Boolean(conversation.resourceSentAt);
   const row = await prisma.dmLog.findUnique({
     where: { automationId_commentId: { automationId: campaign.id, commentId: `reveal:${conversation.userId}` } },
     select: { status: true },
@@ -208,6 +239,7 @@ async function turnInput(
     mode,
     reel: campaign ? await reelContext(campaign as ReelCampaign, context) : "",
     username: conversation.username,
+    channel: conversation.channel,
     phase: conversation.phase,
     notes: conversation.notes,
     timezone: conversation.timezone,
@@ -260,7 +292,7 @@ function slotTools(conversation: Conversation, campaign: Awaited<ReturnType<type
         start,
         minutes: callMinutes(),
         email,
-        summary: `Llamada NodeStudio con ${args.nombre || conversation.username || "lead de instagram"}`,
+        summary: `Llamada NodeStudio con ${args.nombre || conversation.username || `lead de ${conversation.channel}`}`,
         // The person sees this: nothing about them here (that goes in the prep event).
         description: "Llamada con Valentín Panizza (NodeStudio) por Google Meet.",
       });
@@ -286,6 +318,7 @@ export async function callPrep(
   campaign ??= await campaignFor(conversation.automationId);
   return callPrepPrompt({
     username: conversation.username,
+    channel: conversation.channel,
     email: conversation.email,
     callAt: conversation.callAt,
     minutes: callMinutes(),
@@ -318,7 +351,7 @@ async function afterBooking(
           instagramAccountId: conversation.instagramAccountId,
           userId: conversation.userId,
           username: conversation.username,
-          commentText: `agendó llamada: ${formatInZone(start, ownerTimeZone())}`,
+          commentText: `${onFacebook(conversation) ? "(Facebook) " : ""}agendó llamada: ${formatInZone(start, ownerTimeZone())}`,
         },
       });
       await queue.add(LEAD_JOB_NAME, {
@@ -353,7 +386,7 @@ async function afterBooking(
     const prep = await createPrivateEvent({
       start: new Date(start.getTime() - PREP_LEAD_MINUTES * 60_000),
       minutes: 20,
-      summary: `Preparar llamada con ${conversation.username ? `@${conversation.username}` : "lead de instagram"}`,
+      summary: `Preparar llamada con ${conversation.username ? `@${conversation.username}` : `lead de ${conversation.channel}`}`,
       description: `Copiá todo esto y pegalo en Claude:\n\n${await callPrep(conversation, campaign)}`,
     });
     prepLink = prep.link;
@@ -361,12 +394,12 @@ async function afterBooking(
     console.error("[Setter] Call prep event failed:", formatError(error));
   }
   await notifyOwner({
-    title: `📅 ${conversation.username ? `@${conversation.username}` : "Alguien"} agendó una llamada`,
+    title: `📅 ${whoIs(conversation, "Alguien")} agendó una llamada`,
     message: `${formatInZone(start, ownerTimeZone())} (tu hora) · ${conversation.email ?? ""}${
       prepLink ? "\nEl prompt para preparar la llamada está en tu calendario, 30 min antes." : ""
     }`,
     tags: ["calendar"],
-    click: chatLink(conversation.username),
+    click: conversationLink(conversation),
   });
 }
 
@@ -375,6 +408,8 @@ export async function syncSetterEchoesFlag(): Promise<void> {
   const redis = getRedisConnection();
   if (setterEnabled()) await redis.set(SETTER_ECHOES_FLAG, "1", "EX", 300);
   else await redis.del(SETTER_ECHOES_FLAG);
+  if (setterEnabled() && facebookSetterEnabled()) await redis.set(SETTER_FACEBOOK_FLAG, "1", "EX", 300);
+  else await redis.del(SETTER_FACEBOOK_FLAG);
 }
 
 // ─── Opening: the private reply to a comment ────────────────────────────────────
@@ -601,10 +636,10 @@ async function handOver(conversation: Conversation, reason: string, { quiet = fa
   await getRedisConnection().del(tokenKey(conversation.id));
   if (quiet) return;
   await notifyOwner({
-    title: `Contestale vos a ${conversation.username ? `@${conversation.username}` : "esta persona"}`,
+    title: `Contestale vos a ${whoIs(conversation, "esta persona")}`,
     message: reason,
     tags: ["raising_hand"],
-    click: chatLink(conversation.username),
+    click: conversationLink(conversation),
     actions: setterButtons(conversation.id),
   });
 }
@@ -637,7 +672,12 @@ export async function resumeSetter(conversation: Conversation): Promise<void> {
     select: { instagramId: true },
   });
   if (!account) return;
-  await scheduleReply(conversation, { instagramAccountId: account.instagramId }, last.mid ?? last.id, 5_000);
+  await scheduleReply(
+    conversation,
+    { instagramAccountId: pacingKey(conversation, account.instagramId) },
+    last.mid ?? last.id,
+    5_000
+  );
 }
 
 async function stillCurrent(conversationId: string, token: string): Promise<boolean> {
@@ -779,20 +819,27 @@ const LINK_BUTTON_TITLES = ["Abrir", "Ver acá", "Abrir acá", "Verlo"];
  * the plain text with the link goes instead.
  */
 async function sendSetterMessage(params: {
+  conversation: Conversation;
   context: InstagramContext;
   instagramAccountId: string;
   userId: string;
   message: string;
 }) {
+  const facebook = onFacebook(params.conversation);
+  const sendText = () =>
+    facebook ? sendPageText(pageToken(), params.userId, params.message) : sendDirectMessage(params);
   const split = splitLink(params.message);
-  if (!split) return sendDirectMessage(params);
+  if (!split) return sendText();
   const title = LINK_BUTTON_TITLES[Math.floor(Math.random() * LINK_BUTTON_TITLES.length)];
   try {
-    return await sendDirectMessageWithLinkButton({ ...params, text: split.text, buttons: [{ title, url: split.url }] });
+    const buttons = [{ title, url: split.url }];
+    return facebook
+      ? await sendPageLinkButton(pageToken(), params.userId, split.text, buttons)
+      : await sendDirectMessageWithLinkButton({ ...params, text: split.text, buttons });
   } catch (error) {
     if (!(error instanceof MetaApiError) || error.code !== 100) throw error;
     console.log("[Setter] Link button refused, sending the link as text:", error.message);
-    return sendDirectMessage(params);
+    return sendText();
   }
 }
 
@@ -819,7 +866,8 @@ export async function processSetterReply(job: Job<SetterReplyJob>): Promise<void
     if (!conversation) return;
 
     const priority = isPriority(conversation, await fitOf(conversationId));
-    if ((await overReplyCap()) && !priority) {
+    // The daily cap is about Instagram's limits.
+    if (!onFacebook(conversation) && (await overReplyCap()) && !priority) {
       await deferToMorning(conversation, job.data, token);
       return;
     }
@@ -879,13 +927,14 @@ export async function processSetterReply(job: Job<SetterReplyJob>): Promise<void
         if (!(await stillCurrent(conversationId, token))) break;
       }
       const result = await sendSetterMessage({
+        conversation,
         context,
         instagramAccountId: account.instagramId,
         userId: conversation.userId,
         message: text,
       });
       sentSomething = true;
-      await recordReplies(1);
+      if (!onFacebook(conversation)) await recordReplies(1);
       await prisma.setterMessage.create({
         data: {
           conversationId,
@@ -903,14 +952,17 @@ export async function processSetterReply(job: Job<SetterReplyJob>): Promise<void
     const audioUrls = decision.audio ? setterAudios()[decision.audio] : undefined;
     if (decision.audio && audioUrls?.length && (await stillCurrent(conversationId, token))) {
       await sleep(4_000 + Math.random() * 4_000);
-      const result = await sendDirectAudio({
-        context,
-        instagramAccountId: account.instagramId,
-        userId: conversation.userId,
-        url: audioUrls[Math.floor(Math.random() * audioUrls.length)],
-      });
+      const audioUrl = audioUrls[Math.floor(Math.random() * audioUrls.length)];
+      const result = onFacebook(conversation)
+        ? await sendPageAudio(pageToken(), conversation.userId, audioUrl)
+        : await sendDirectAudio({
+            context,
+            instagramAccountId: account.instagramId,
+            userId: conversation.userId,
+            url: audioUrl,
+          });
       sentSomething = true;
-      await recordReplies(1);
+      if (!onFacebook(conversation)) await recordReplies(1);
       await prisma.setterMessage.create({
         data: {
           conversationId,
@@ -924,7 +976,7 @@ export async function processSetterReply(job: Job<SetterReplyJob>): Promise<void
       });
     }
 
-    if (sentResource && campaign) {
+    if (sentResource && campaign && !onFacebook(conversation)) {
       // Counted like every other resource delivery (the reveal rows).
       const logKey = { automationId: campaign.id, commentId: `reveal:${conversation.userId}` };
       await prisma.dmLog.upsert({
@@ -969,8 +1021,8 @@ export async function processSetterReply(job: Job<SetterReplyJob>): Promise<void
       const instagramId = job.data.instagramAccountId;
       if (await pauseSending(instagramId)) {
         await notifyOwner({
-          title: "Instagram frenó al setter",
-          message: `Límite de frecuencia (368). Pausa de unas ${Math.round(rateLimitPauseMs() / 3600_000)} h: las respuestas esperan y después salen de a una. Las que pasen las 24 h quedan para vos, sin aviso (setter.ts list).`,
+          title: `${onFacebook(conversation) ? "Facebook" : "Instagram"} frenó al setter`,
+          message: `Límite de frecuencia. Pausa de unas ${Math.round(rateLimitPauseMs() / 3600_000)} h: las respuestas esperan y después salen de a una. Las que pasen las 24 h quedan para vos, sin aviso (setter.ts list).`,
           tags: ["hourglass"],
         });
       }
@@ -1022,9 +1074,13 @@ async function shadowTurn(
 // ─── The owner writing by hand ──────────────────────────────────────────────────
 
 export async function processSetterEcho(job: Job<SetterEchoJob>): Promise<void> {
+  await handleEcho(job.data);
+}
+
+async function handleEcho(data: SetterEchoJob): Promise<void> {
   if (!setterEnabled()) return;
-  const { userId, messageId, messageText, attachmentType } = job.data;
-  const conversation = await findConversation(job.data, userId);
+  const { userId, messageId, messageText, attachmentType } = data;
+  const conversation = await findConversation(data, userId);
   if (!conversation) return;
   // One of the setter's own messages.
   if (await prisma.setterMessage.findUnique({ where: { mid: messageId }, select: { id: true } })) return;
@@ -1063,7 +1119,7 @@ export async function processSetterReminder(job: Job<SetterReminderJob>): Promis
   if (!account || !hasInstagramCredentials(account)) return;
   // While Instagram has the setter paused, trying would only extend the block:
   // the calendar invitation reminds them anyway.
-  if ((await pausedUntil(account.instagramId)) > Date.now()) return;
+  if ((await pausedUntil(pacingKey(conversation, account.instagramId))) > Date.now()) return;
   const context = await createInstagramContext(account, `${job.id}:setter-reminder`);
   const time = new Intl.DateTimeFormat("es-UY", {
     timeZone: conversation.timezone ?? ownerTimeZone(),
@@ -1075,12 +1131,14 @@ export async function processSetterReminder(job: Job<SetterReminderJob>): Promis
     `buenas! te recuerdo que hoy a las ${time} tenemos la llamada. el link de meet esta en la invitacion que te llego al mail, nos vemos ahi`
   );
   try {
-    const result = await sendDirectMessage({
-      context,
-      instagramAccountId: account.instagramId,
-      userId: conversation.userId,
-      message: text,
-    });
+    const result = onFacebook(conversation)
+      ? await sendPageText(pageToken(), conversation.userId, text)
+      : await sendDirectMessage({
+          context,
+          instagramAccountId: account.instagramId,
+          userId: conversation.userId,
+          message: text,
+        });
     await prisma.setterMessage.create({
       data: { conversationId: conversation.id, role: "bot", text, mid: result?.message_id ?? null },
     });
@@ -1088,4 +1146,91 @@ export async function processSetterReminder(job: Job<SetterReminderJob>): Promis
     // Usually the 24-hour window: they have not written since the day before.
     console.log("[Setter] Call reminder not sent:", formatError(error));
   }
+}
+
+// ─── The Facebook Page (see facebook.ts) ────────────────────────────────────────
+
+async function campaignForLink(link: string) {
+  const rows = await prisma.trackedLink.findMany({
+    where: { destinationUrl: { in: urlVariants(link) } },
+    select: { automation: { select: { id: true, name: true, isActive: true, createdAt: true, workspaceId: true } } },
+  });
+  return pickCampaign(rows.map((row) => row.automation));
+}
+
+/**
+ * The first message, sent by the Business Suite automation: from here on the
+ * setter owns the chat. Its link says which campaign this is, and that the
+ * person has the resource already.
+ */
+async function startFacebookConversation(
+  key: { instagramAccountId: string; userId: string },
+  campaign: { id: string; workspaceId: string },
+  data: SetterFacebookJob
+): Promise<void> {
+  const now = new Date();
+  const conversation = await prisma.setterConversation.upsert({
+    where: { instagramAccountId_userId: key },
+    create: {
+      ...key,
+      channel: FACEBOOK_CHANNEL,
+      workspaceId: campaign.workspaceId,
+      automationId: campaign.id,
+      resourceSentAt: now,
+      lastBotAt: now,
+    },
+    update: { automationId: campaign.id, resourceSentAt: now, lastBotAt: now },
+  });
+  try {
+    await prisma.setterMessage.create({
+      data: { conversationId: conversation.id, role: "bot", kind: "resource", text: data.messageText, mid: data.messageId },
+    });
+  } catch (error) {
+    if (!(typeof error === "object" && error && "code" in error && error.code === "P2002")) throw error;
+  }
+}
+
+export async function processSetterFacebook(job: Job<SetterFacebookJob>): Promise<void> {
+  if (!setterEnabled() || !facebookSetterEnabled()) return;
+  const data = job.data;
+  if (!facebookAllowsUser(data.userId)) return;
+  // The Page is the same owner's: its conversations hang from his connection.
+  const account = await prisma.instagramAccount.findFirst({
+    where: { provider: "META" },
+    orderBy: { connectedAt: "asc" },
+    select: { id: true },
+  });
+  if (!account) return;
+  const pacing = { accountConnectionId: account.id, instagramAccountId: facebookPacingKey(data.pageId) };
+
+  if (data.kind === "message") {
+    // Like on Instagram, only people who came through a comment: someone
+    // writing to the Page out of the blue is not the setter's.
+    await setterTakesMessage({
+      ...pacing,
+      messageId: data.messageId,
+      messageText: data.messageText,
+      senderId: data.userId,
+      ...(data.attachmentType ? { attachmentType: data.attachmentType } : {}),
+      ...(data.attachmentUrl ? { attachmentUrl: data.attachmentUrl } : {}),
+    });
+    return;
+  }
+
+  // Sent by this app: the setter's own message.
+  if (data.appId && data.appId === process.env.FB_APP_ID) return;
+  const link = firstUrl(data.messageText);
+  const campaign = link ? await campaignForLink(link) : null;
+  if (campaign) {
+    await startFacebookConversation({ instagramAccountId: account.id, userId: data.userId }, campaign, data);
+    return;
+  }
+  // Anything else the Page sent was written by hand by the owner.
+  await handleEcho({
+    ...pacing,
+    userId: data.userId,
+    messageId: data.messageId,
+    messageText: data.messageText,
+    ...(data.attachmentType ? { attachmentType: data.attachmentType } : {}),
+  });
 }

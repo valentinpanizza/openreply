@@ -13,6 +13,7 @@ export interface PrepLine {
 
 export interface PrepInput {
   username: string | null;
+  channel?: string;
   email: string | null;
   callAt: Date;
   minutes: number;
@@ -52,7 +53,8 @@ function stamp(at: Date, timeZone: string): string {
 }
 
 export function callPrepPrompt(input: PrepInput, maxChars = PREP_MAX_CHARS): string {
-  const who = input.username ? `@${input.username}` : "una persona de instagram";
+  const network = input.channel === "facebook" ? "Facebook" : "Instagram";
+  const who = input.username ? `@${input.username}` : `una persona de ${network.toLowerCase()}`;
   const theirTime =
     input.personTimeZone && input.personTimeZone !== input.ownerTimeZone
       ? ` (para la persona: ${when(input.callAt, input.personTimeZone)}, ${input.personTimeZone})`
@@ -62,7 +64,7 @@ export function callPrepPrompt(input: PrepInput, maxChars = PREP_MAX_CHARS): str
     "Soy Valentín Panizza (@valentinpanizza), de Uruguay. Tengo NodeStudio: armo sistemas con IA y automatizaciones para negocios (contestar mensajes y consultas, turnos y agenda, seguimiento de clientes, reportes, procesos internos) y doy consultorías 1 a 1 a quienes quieren aprender a armar sus propios sistemas.",
     "",
     `Tengo una llamada de ${input.minutes} minutos por Google Meet con ${who} el ${when(input.callAt, input.ownerTimeZone)}, mi hora${theirTime}.${input.email ? ` Mail: ${input.email}.` : ""}`,
-    "La persona comentó uno de mis reels y la llamada la agendó mi setter: una IA que habla por DM de Instagram en mi nombre, siguiendo mi guion (situación actual, obstáculo, propuesta de llamada gratis). Abajo está la charla completa.",
+    `La persona comentó uno de mis reels y la llamada la agendó mi setter: una IA que habla por DM de ${network} en mi nombre, siguiendo mi guion (situación actual, obstáculo, propuesta de llamada gratis). Abajo está la charla completa.`,
     "",
     "Ayudame a preparar la llamada:",
     "1. Resumen de la persona en 3 o 4 líneas: quién es, qué negocio tiene o qué quiere aprender, qué le duele y qué intentó.",

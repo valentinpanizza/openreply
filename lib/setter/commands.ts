@@ -2,7 +2,7 @@ import { prisma } from "@/lib/db/client";
 import { getRedisConnection } from "@/lib/queue/client";
 import { setterEnabled } from "./config";
 import { resumeSetter, silenceSetter } from "./engine";
-import { chatLink, commandTopic, notifyOwner, ntfyBase } from "./notify";
+import { commandTopic, conversationLink, notifyOwner, ntfyBase } from "./notify";
 
 /**
  * Commands from the owner's phone: the buttons on the setter's pings post
@@ -56,7 +56,7 @@ async function runCommand(text: string): Promise<void> {
       title: `Listo: el agente no le habla más a ${who}`,
       message: "La charla queda en tus manos aunque le escribas. Para que vuelva: el botón \"Que siga el agente\" o \"seguir\".",
       tags: ["mute"],
-      click: chatLink(conversation.username),
+      click: conversationLink(conversation),
     });
   } else {
     await resumeSetter(conversation);
@@ -64,7 +64,7 @@ async function runCommand(text: string): Promise<void> {
       title: `Listo: el agente sigue con ${who}`,
       message: "Si quedó un mensaje suyo sin contestar, le contesta ahora.",
       tags: ["robot"],
-      click: chatLink(conversation.username),
+      click: conversationLink(conversation),
     });
   }
 }

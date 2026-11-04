@@ -451,6 +451,8 @@ model SetterConversation {
   workspaceId        String
   // InstagramAccount.id (the connection), not the Instagram user id.
   instagramAccountId String
+  // instagram, or facebook: Messenger, through the Page (lib/setter/facebook.ts).
+  channel            String       @default("instagram")
   userId             String
   username           String?
   // The campaign whose reel they commented on last.

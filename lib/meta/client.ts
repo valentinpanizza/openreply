@@ -392,6 +392,48 @@ export async function sendDirectMessage(
 }
 
 /**
+ * A message from the Facebook Page, through Messenger, to someone who wrote to
+ * it. `message` is what the Send API takes: text, an attachment or a template.
+ */
+async function sendPageMessage(
+  pageAccessToken: string,
+  userId: string,
+  message: Record<string, unknown>
+): Promise<{ recipient_id: string; message_id: string }> {
+  const response = await fetch(`${facebookGraphBase()}/me/messages`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${pageAccessToken}`,
+    },
+    body: JSON.stringify({
+      messaging_type: "RESPONSE",
+      recipient: { id: userId },
+      message,
+    }),
+  });
+
+  return handleResponse(response);
+}
+
+export function sendPageText(pageAccessToken: string, userId: string, text: string) {
+  return sendPageMessage(pageAccessToken, userId, { text });
+}
+
+export function sendPageAudio(pageAccessToken: string, userId: string, url: string) {
+  return sendPageMessage(pageAccessToken, userId, { attachment: { type: "audio", payload: { url } } });
+}
+
+export function sendPageLinkButton(pageAccessToken: string, userId: string, text: string, buttons: LinkButton[]) {
+  return sendPageMessage(pageAccessToken, userId, {
+    attachment: {
+      type: "template",
+      payload: { template_type: "button", text: text.slice(0, 640), buttons: toWebUrlButtons(buttons) },
+    },
+  });
+}
+
+/**
  * Send a file as a direct message. Instagram takes either text or one
  * attachment per message, never both. Audio: aac, m4a, wav or mp4, up to 25 MB,
  * fetched by Meta from the public `url`.

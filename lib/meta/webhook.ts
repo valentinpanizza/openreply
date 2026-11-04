@@ -329,3 +329,62 @@ export function parseEchoEvents(payload: WebhookPayload): WebhookEchoEvent[] {
 
   return events;
 }
+
+export interface PageEvent {
+  pageId: string;
+  // message: the person wrote to the Page. echo: the Page sent something.
+  kind: "message" | "echo";
+  userId: string;
+  messageId: string;
+  messageText: string;
+  attachmentType?: string;
+  attachmentUrl?: string;
+  // The app that sent an echo; none when it was written by hand.
+  appId?: string;
+}
+
+/** Messenger events from a Facebook Page webhook (object "page"). */
+export function parsePageEvents(payload: unknown): PageEvent[] {
+  const body = payload as {
+    object?: string;
+    entry?: {
+      id?: string;
+      messaging?: {
+        sender?: { id?: string };
+        recipient?: { id?: string };
+        message?: {
+          mid?: string;
+          text?: string;
+          is_echo?: boolean;
+          app_id?: number | string;
+          attachments?: { type?: string; payload?: { url?: string; sticker_id?: number | string } }[];
+        };
+      }[];
+    }[];
+  };
+  if (body?.object !== "page" || !Array.isArray(body.entry)) return [];
+  const events: PageEvent[] = [];
+  for (const entry of body.entry) {
+    for (const item of entry.messaging ?? []) {
+      const message = item.message;
+      if (!entry.id || !message?.mid) continue;
+      const echo = Boolean(message.is_echo);
+      const userId = echo ? item.recipient?.id : item.sender?.id;
+      if (!userId) continue;
+      const attachment = message.attachments?.[0];
+      // A sticker is the like button of a Messenger chat, not a photo to look at.
+      const sticker = attachment?.payload?.sticker_id !== undefined;
+      events.push({
+        pageId: entry.id,
+        kind: echo ? "echo" : "message",
+        userId,
+        messageId: message.mid,
+        messageText: message.text ?? (sticker ? "[mandó un sticker]" : ""),
+        ...(attachment?.type && !sticker ? { attachmentType: attachment.type } : {}),
+        ...(attachment?.payload?.url && !sticker ? { attachmentUrl: attachment.payload.url } : {}),
+        ...(message.app_id !== undefined ? { appId: String(message.app_id) } : {}),
+      });
+    }
+  }
+  return events;
+}

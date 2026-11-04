@@ -132,6 +132,21 @@ export interface SetterEchoJob {
   attachmentType?: string;
 }
 
+// A Messenger event of the Facebook Page, for the setter (lib/setter/facebook.ts).
+export interface SetterFacebookJob {
+  accountConnectionId?: string;
+  // The Page's pacing key (fb:<id>), not an Instagram id.
+  instagramAccountId: string;
+  pageId: string;
+  kind: "message" | "echo";
+  userId: string;
+  messageId: string;
+  messageText: string;
+  attachmentType?: string;
+  attachmentUrl?: string;
+  appId?: string;
+}
+
 // A reminder before a call the setter booked. Best effort: Instagram only
 // lets it through within 24 hours of the person's last message.
 export interface SetterReminderJob {
@@ -150,6 +165,7 @@ export type DmQueueJob =
   | LeadAudioJob
   | SetterReplyJob
   | SetterEchoJob
+  | SetterFacebookJob
   | SetterReminderJob;
 
 export const POSTBACK_JOB_NAME = "process-postback";
@@ -163,6 +179,7 @@ export const LEAD_JOB_NAME = "notify-lead";
 export const LEAD_AUDIO_JOB_NAME = "send-lead-audio";
 export const SETTER_REPLY_JOB_NAME = "setter-reply";
 export const SETTER_ECHO_JOB_NAME = "setter-echo";
+export const SETTER_FACEBOOK_JOB_NAME = "setter-facebook";
 export const SETTER_REMINDER_JOB_NAME = "setter-reminder";
 
 let dmQueue: Queue<DmQueueJob> | null = null;

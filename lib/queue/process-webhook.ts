@@ -5,14 +5,30 @@ import {
   OPENING_DM_READ_FALLBACK_WINDOW_MS,
   POSTBACK_JOB_NAME,
   SETTER_ECHO_JOB_NAME,
+  SETTER_FACEBOOK_JOB_NAME,
 } from '@/lib/queue/client';
-import { parseCommentEvents, parseEchoEvents, parseMessageEvents, parsePostbackEvents, parseReadEvents } from '@/lib/meta/webhook';
+import { parseCommentEvents, parseEchoEvents, parseMessageEvents, parsePageEvents, parsePostbackEvents, parseReadEvents } from '@/lib/meta/webhook';
 import { Prisma, type InstagramProvider } from '@/app/generated/prisma/client';
 import { getRedisConnection } from '@/lib/queue/client';
 import { SETTER_ECHOES_FLAG } from '@/lib/setter/config';
+import { SETTER_FACEBOOK_FLAG, facebookPacingKey } from '@/lib/setter/facebook';
 
 const OPENING_DM_READ_FALLBACK_DELAY_MS = 5 * 60 * 1000;
 type InstagramPayload = Parameters<typeof parseCommentEvents>[0];
+
+/** Messenger events of the Facebook Page, for the setter (lib/setter/facebook.ts). */
+export async function processPageWebhook(payload: unknown) {
+  const events = parsePageEvents(payload);
+  if (events.length === 0 || !(await getRedisConnection().get(SETTER_FACEBOOK_FLAG))) return;
+  const queue = getDMQueue();
+  for (const event of events) {
+    await queue.add(SETTER_FACEBOOK_JOB_NAME, { ...event, instagramAccountId: facebookPacingKey(event.pageId) }, {
+      jobId: `setter_fb_${Buffer.from(event.messageId).toString("base64url")}`,
+      removeOnComplete: true,
+      removeOnFail: { age: 24 * 3600 },
+    });
+  }
+}
 
 export async function processInstagramWebhook({ payload: incoming, provider, workspaceId }: {
   payload: InstagramPayload; provider: InstagramProvider; workspaceId?: string;
