@@ -61,6 +61,21 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  // Facebook Page events (Messenger): not handled yet, kept so they can be read.
+  if ((payload as { object?: unknown }).object === "page") {
+    await prisma.operationalEvent
+      .create({
+        data: {
+          source: "SYSTEM",
+          level: "INFO",
+          message: "Facebook Page webhook",
+          payload: { bodyPreview: rawBody.slice(0, 1500) },
+        },
+      })
+      .catch(() => {});
+    return NextResponse.json({ success: true });
+  }
+
   try {
     await processInstagramWebhook({ payload: payload as Parameters<typeof parseCommentEvents>[0], provider: 'META' });
     return NextResponse.json({ success: true });
