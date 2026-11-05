@@ -192,7 +192,7 @@ async function readCaption(cloud: OpenCloudClient, folder: DavEntry): Promise<st
 }
 
 /** The links of the campaign that do not answer 2xx (after redirects). */
-async function brokenLinks(urls: string[]): Promise<string[]> {
+export async function brokenLinks(urls: string[]): Promise<string[]> {
   const broken: string[] = [];
   for (const url of urls) {
     const ok = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(15_000) })

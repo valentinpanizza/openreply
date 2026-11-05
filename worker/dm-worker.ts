@@ -4,6 +4,7 @@ import { reconcileComments } from "@/lib/polling/comment-reconciler";
 import { attachPendingNextReels } from "@/lib/automation/attach-next-reel";
 import { runTrialPublisher } from "@/lib/trials/publisher";
 import { runCarouselPublisher } from "@/lib/carousels/publisher";
+import { runReelPublisher } from "@/lib/reels/publisher";
 import { syncSetterEchoesFlag } from "@/lib/setter/engine";
 import { pollSetterCommands } from "@/lib/setter/commands";
 import { maybeSendDayReport } from "@/lib/setter/report";
@@ -99,6 +100,28 @@ async function carouselTick() {
 
 const carouselTimer = setInterval(() => void carouselTick(), TRIAL_TICK_MS);
 
+// Finished reels to the feed from the OpenCloud queue (REEL_PUBLISH_ENABLED),
+// one a day. Same pace as the trials, on its own timer.
+let reelRunning = false;
+
+async function reelTick() {
+  if (reelRunning) return;
+  reelRunning = true;
+  try {
+    const result = await runReelPublisher();
+    if (result.status !== "disabled" && result.status !== "waiting") {
+      console.log("[DM Worker] Reel publisher:", result);
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    console.error("[DM Worker] Reel publisher failed:", message);
+  } finally {
+    reelRunning = false;
+  }
+}
+
+const reelTimer = setInterval(() => void reelTick(), TRIAL_TICK_MS);
+
 // The setter's buttons on the owner's phone (lib/setter/commands.ts): often,
 // so "callar" lands before the person writes again.
 const SETTER_COMMANDS_MS = 15_000;
@@ -140,6 +163,7 @@ async function shutdown(signal: string) {
   clearInterval(trialTimer);
   clearInterval(setterReportTimer);
   clearInterval(carouselTimer);
+  clearInterval(reelTimer);
   clearInterval(setterCommandsTimer);
   await worker.close();
   process.exit(0);

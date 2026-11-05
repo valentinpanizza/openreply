@@ -955,7 +955,7 @@ export type TrialGraduationStrategy = "MANUAL" | "SS_PERFORMANCE";
 export async function createReelContainer(
   accessToken: string,
   instagramAccountId: string,
-  options: { videoUrl: string; caption: string; thumbOffsetMs?: number; trial?: TrialGraduationStrategy }
+  options: { videoUrl: string; caption: string; thumbOffsetMs?: number; trial?: TrialGraduationStrategy; shareToFeed?: boolean }
 ): Promise<{ id: string }> {
   const response = await fetch(`${instagramGraphBase()}/${instagramAccountId}/media`, {
     method: "POST",
@@ -969,6 +969,7 @@ export async function createReelContainer(
       caption: options.caption,
       ...(options.thumbOffsetMs !== undefined ? { thumb_offset: options.thumbOffsetMs } : {}),
       ...(options.trial ? { trial_params: { graduation_strategy: options.trial } } : {}),
+      ...(options.shareToFeed !== undefined ? { share_to_feed: options.shareToFeed } : {}),
     }),
   });
 
