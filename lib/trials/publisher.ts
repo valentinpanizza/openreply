@@ -45,6 +45,7 @@ import {
   type TrialGraduationStrategy,
 } from "@/lib/meta/client";
 import { OpenCloudClient, type DavEntry } from "./opencloud";
+import { ShrinkError } from "./shrink";
 import { changeSpeed, parseSpeed } from "./speed";
 import { stageVideo, type StagedVideo } from "./staging";
 
@@ -592,7 +593,7 @@ async function publishCandidate(
   } catch (error) {
     await redis.del(INFLIGHT_KEY);
     let where = "";
-    if (error instanceof ContainerError) {
+    if (error instanceof ContainerError || error instanceof ShrinkError) {
       await cloud.moveInto(candidate.video.path, `${candidate.folder.path}/${ERROR_DIR}`).catch(() => undefined);
       where = ` Lo moví a ${ERROR_DIR}/.`;
     }

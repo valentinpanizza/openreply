@@ -5,10 +5,12 @@
  * a video_url or an image_url.
  *
  * Needs SUPABASE_URL and SUPABASE_SERVICE_KEY (the project's service_role key)
- * and a public bucket (TRIAL_STAGING_BUCKET, default "trial-tmp").
+ * and a public bucket (TRIAL_STAGING_BUCKET, default "trial-tmp"), whose size
+ * limit is TRIAL_STAGING_MAX_MB (default 50, the free plan's).
  */
 
 import { randomUUID } from "node:crypto";
+import { fitVideo, stagingLimitBytes } from "./shrink";
 
 export interface StagedVideo {
   url: string;
@@ -52,9 +54,11 @@ export async function stageFile(
   };
 }
 
+/** A video too heavy for the bucket is compressed first (see shrink.ts). */
 export async function stageVideo(
   video: ArrayBuffer,
   env: NodeJS.ProcessEnv = process.env
 ): Promise<StagedVideo> {
-  return stageFile(video, { extension: "mp4", contentType: "video/mp4" }, env);
+  const fitted = await fitVideo(video, stagingLimitBytes(env));
+  return stageFile(fitted, { extension: "mp4", contentType: "video/mp4" }, env);
 }

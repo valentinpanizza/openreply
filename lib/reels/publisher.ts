@@ -44,6 +44,7 @@ import {
 } from "@/lib/meta/client";
 import { OpenCloudClient, type DavEntry } from "@/lib/trials/opencloud";
 import { localDay, planDaySlots } from "@/lib/trials/publisher";
+import { ShrinkError } from "@/lib/trials/shrink";
 import { stageVideo, type StagedVideo } from "@/lib/trials/staging";
 
 const CAPTION_FILES = ["caption.txt", "texto.txt"];
@@ -444,8 +445,8 @@ async function publishCandidate(
   } catch (error) {
     await redis.del(INFLIGHT_KEY);
     let where = " Lo vuelvo a intentar en el próximo turno.";
-    if (error instanceof ContainerError) {
-      // The same video would be refused again: out of the queue so the next one goes.
+    if (error instanceof ContainerError || error instanceof ShrinkError) {
+      // The same video would be refused (or fail to shrink) again: out of the queue so the next one goes.
       await cloud.rename(candidate.folder.path, `${ERROR_PREFIX}${candidate.folder.name}`).catch(() => undefined);
       where = ` Lo renombré "${ERROR_PREFIX}${candidate.folder.name}".`;
     }

@@ -61,6 +61,7 @@ vi.mock("@/lib/trials/opencloud", async (importOriginal) => ({
 
 import { reelCampaignName, reelPublisherConfig, runReelPublisher } from "../lib/reels/publisher";
 import { MetaApiError } from "../lib/meta/client";
+import { ShrinkError } from "../lib/trials/shrink";
 
 const ROOT = "Animados";
 const folder = (name: string) => ({ name, path: `${ROOT}/${name}`, isDir: true, size: 0 });
@@ -257,6 +258,21 @@ describe("publishing", () => {
     expect(cloud.rename).toHaveBeenCalledWith(`${ROOT}/2 LEGAL`, "_ERROR 2 LEGAL");
     expect(mockMeta.publishMediaContainer).not.toHaveBeenCalled();
     expect(mockUnstage).toHaveBeenCalled();
+  });
+
+  it("takes a video that cannot be shrunk to fit the bucket out of the queue", async () => {
+    mockStage.mockReset().mockRejectedValue(new ShrinkError("aun comprimido pesa 60 MB; el límite de Supabase es 50 MB"));
+    const result = await runReelPublisher({ now: NOW, sleep });
+    expect(result).toMatchObject({ status: "failed", folder: `${ROOT}/2 LEGAL` });
+    expect(cloud.rename).toHaveBeenCalledWith(`${ROOT}/2 LEGAL`, "_ERROR 2 LEGAL");
+    expect(mockMeta.createReelContainer).not.toHaveBeenCalled();
+  });
+
+  it("tries again next turn when the bucket fails for another reason", async () => {
+    mockStage.mockReset().mockRejectedValue(new Error("Supabase no aceptó el archivo (HTTP 503): down"));
+    const result = await runReelPublisher({ now: NOW, sleep });
+    expect(result).toMatchObject({ status: "failed", folder: `${ROOT}/2 LEGAL` });
+    expect(cloud.rename).not.toHaveBeenCalled();
   });
 
   it("leaves the folder in place when Meta refuses the publish", async () => {

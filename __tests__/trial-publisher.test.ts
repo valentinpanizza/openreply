@@ -68,6 +68,7 @@ import { nextTrialNumber, parseFolderName, planDaySlots, runTrialPublisher } fro
 import { parsePropfind } from "../lib/trials/opencloud";
 import { parseSpeed, speedArgs } from "../lib/trials/speed";
 import { MetaApiError } from "../lib/meta/client";
+import { ShrinkError } from "../lib/trials/shrink";
 
 const DIR = "Reels/Trial/Costo";
 const folder = (name: string) => ({ name, path: `Reels/Trial/${name}`, isDir: true, size: 0 });
@@ -266,6 +267,17 @@ describe("runTrialPublisher", () => {
     expect(cloud.moveInto).toHaveBeenCalledWith(`${DIR}/normal_2.mp4`, `${DIR}/error`);
     expect(redis.kv.has("trial:inflight")).toBe(false);
     expect(slots()[0].done).toBe(true);
+  });
+
+  it("parks a video that cannot be shrunk to fit the bucket", async () => {
+    seedSlots([{ at: "2026-10-08T15:00:00.000Z", done: false }]);
+    mockStage.mockReset().mockRejectedValue(new ShrinkError("ffmpeg falló: invalid data"));
+
+    const result = await runTrialPublisher({ now: NOW, sleep });
+
+    expect(result.status).toBe("failed");
+    expect(mockMeta.createReelContainer).not.toHaveBeenCalled();
+    expect(cloud.moveInto).toHaveBeenCalledWith(`${DIR}/normal_2.mp4`, `${DIR}/error`);
   });
 
   it("leaves the file for the next slot when Meta refuses the publish", async () => {
