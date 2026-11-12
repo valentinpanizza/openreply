@@ -1,6 +1,6 @@
 /**
  * How the setter's messages look: all lowercase, no emojis, no opening ¿ ¡,
- * no long dashes, the way people actually type in a DM. Links and email
+ * no long dashes or colons, the way people actually type in a DM. Links and email
  * addresses keep their case, since a lowercased path can break a link.
  */
 
@@ -18,10 +18,16 @@ export function humanize(text: string): string {
             .replace(EMOJI, "")
             .replace(/[¿¡]/g, "")
             .replace(/\s*[—–]\s*/g, ", ")
+            // Nobody types a colon in a DM ("una pregunta: ..."); times like 15:00 stay.
+            .replace(/\s*:(?!\d)/g, ",")
             .toLocaleLowerCase("es")
     )
     .join("");
-  return out.replace(/[ \t]{2,}/g, " ").replace(/ +([,.!?])/g, "$1").trim();
+  return out
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/ +([,.!?])/g, "$1")
+    .replace(/,+(?=[.!?]|\s*(\n|$))/g, "")
+    .trim();
 }
 
 /** A transcript line for the model: what an attachment-only message was. */

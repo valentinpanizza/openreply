@@ -583,6 +583,17 @@ async function startFromStory(
   campaignId: string
 ): Promise<Conversation | null> {
   if (existing) {
+    // Handed to the owner some time ago: the setter stays out, but the owner
+    // hears about it, with the button that gives it back to the setter.
+    if (existing.status === "HUMAN") {
+      await notifyOwner({
+        title: `${whoIs(existing, "Alguien")} respondió la historia`,
+        message: "La charla estaba en tus manos, así que el setter no le contesta: seguí vos, o tocá \"Que siga el agente\".",
+        tags: ["raising_hand"],
+        click: conversationLink(existing),
+        actions: setterButtons(existing.id),
+      });
+    }
     if (existing.automationId === campaignId) return existing;
     // A new ask: the script starts over for it, even if an older chat had closed.
     return prisma.setterConversation.update({

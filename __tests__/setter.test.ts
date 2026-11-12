@@ -35,8 +35,16 @@ describe("humanize", () => {
 
   it("keeps links, emails and the {link} token as they are", () => {
     expect(humanize("Acá Lo Tenés: https://Example.com/R/AbC y {link} Mail: Juan@Mail.COM")).toBe(
-      "acá lo tenés: https://Example.com/R/AbC y {link} mail: Juan@Mail.COM"
+      "acá lo tenés, https://Example.com/R/AbC y {link} mail, Juan@Mail.COM"
     );
+  });
+
+  it("drops colons, but not in links or times", () => {
+    expect(humanize("una pregunta: es para tu negocio?")).toBe("una pregunta, es para tu negocio?");
+    expect(humanize("te lo dejo aca: {link}")).toBe("te lo dejo aca, {link}");
+    expect(humanize("quedamos a las 15:00: te llega el mail")).toBe("quedamos a las 15:00, te llega el mail");
+    expect(humanize("mira esto:\notra cosa:")).toBe("mira esto\notra cosa");
+    expect(humanize("aca https://Example.com/a:b")).toBe("aca https://Example.com/a:b");
   });
 
   it("strips flags and skin tones too", () => {
