@@ -584,7 +584,11 @@ async function startFromStory(
 ): Promise<Conversation | null> {
   if (existing) {
     if (existing.automationId === campaignId) return existing;
-    return prisma.setterConversation.update({ where: { id: existing.id }, data: { automationId: campaignId } });
+    // A new ask: the script starts over for it, even if an older chat had closed.
+    return prisma.setterConversation.update({
+      where: { id: existing.id },
+      data: { automationId: campaignId, phase: "abridor" },
+    });
   }
   const accountId = await connectionId(data);
   if (!accountId) return null;
