@@ -84,6 +84,8 @@ export interface ProcessMessageJob {
   attachmentUrl?: string;
   // Set when the message is a tap on one of our quick replies.
   quickReplyPayload?: string;
+  // Set when the message answers one of the account's stories.
+  storyId?: string;
 }
 
 // Tells LEAD_WEBHOOK_URL about a newly captured Lead. A job of its own so a

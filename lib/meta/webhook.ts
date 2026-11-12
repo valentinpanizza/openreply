@@ -84,6 +84,7 @@ interface WebhookEntry {
       is_unsupported?: boolean;
       attachments?: Array<{ type?: string; payload?: { url?: string } }>;
       quick_reply?: { payload?: string };
+      reply_to?: { mid?: string; story?: { id?: string; url?: string } };
     };
   }>;
 }
@@ -99,6 +100,8 @@ export interface WebhookMessageEvent {
   attachmentUrl?: string;
   // Set when the message is a tap on one of our quick replies.
   quickReplyPayload?: string;
+  // Set when the message answers one of the account's stories.
+  storyId?: string;
 }
 
 // A message the connected account itself sent: an autoreply, or one the
@@ -241,6 +244,7 @@ export function parseMessageEvents(
       const attachmentType = message.attachments?.[0]?.type;
       const attachmentUrl = message.attachments?.[0]?.payload?.url;
       const quickReplyPayload = message.quick_reply?.payload;
+      const storyId = message.reply_to?.story?.id;
       const messageId = message.mid;
       const senderId = messaging.sender?.id;
       const accountId = entry.id ?? messaging.recipient?.id;
@@ -259,6 +263,7 @@ export function parseMessageEvents(
         ...(attachmentType ? { attachmentType } : {}),
         ...(attachmentType === "audio" && attachmentUrl ? { attachmentUrl } : {}),
         ...(quickReplyPayload ? { quickReplyPayload } : {}),
+        ...(storyId ? { storyId } : {}),
       });
     }
   }

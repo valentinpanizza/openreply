@@ -135,6 +135,7 @@ export async function processInstagramWebhook({ payload: incoming, provider, wor
           ...(event.attachmentType ? { attachmentType: event.attachmentType } : {}),
           ...(event.attachmentUrl ? { attachmentUrl: event.attachmentUrl } : {}),
           ...(event.quickReplyPayload ? { quickReplyPayload: event.quickReplyPayload } : {}),
+          ...(event.storyId ? { storyId: event.storyId } : {}),
         },
         {
           // Message ids can contain characters BullMQ rejects in a job id (":"

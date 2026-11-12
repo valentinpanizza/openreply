@@ -3,7 +3,7 @@
  * time zones and free times, echoes, page text and the turn prompt.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { humanize, describeAttachment, joinMessages, splitLink } from "../lib/setter/text";
+import { answersStory, humanize, describeAttachment, joinMessages, splitLink } from "../lib/setter/text";
 import { formatMinutes, formatReport, reportHour } from "../lib/setter/report";
 import { replyDelayMs, typingDelayMs } from "../lib/setter/timing";
 import { setterAllowsUser, setterAudios } from "../lib/setter/config";
@@ -698,5 +698,41 @@ describe("the setter on the Facebook Page", () => {
     fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ error: { code: 368, message: "no" } }), { status: 400 }));
     await expect(sendPageText("TOKEN", "P", "hola")).rejects.toSatisfy(isRateLimited);
     vi.unstubAllGlobals();
+  });
+});
+
+describe("story replies", () => {
+  it("counts the story's word, alone or inside a short reply to the story", () => {
+    expect(answersStory("5", ["5", "cinco"], false)).toBe(true);
+    expect(answersStory("5!! 🔥", ["5", "cinco"], false)).toBe(true);
+    expect(answersStory("Cinco", ["5", "cinco"], false)).toBe(true);
+    expect(answersStory("pasame el 5 porfa", ["5", "cinco"], true)).toBe(true);
+    expect(answersStory("pasame el 5 porfa", ["5", "cinco"], false)).toBe(false);
+    expect(answersStory("50", ["5", "cinco"], true)).toBe(false);
+    expect(answersStory("🔥", ["5", "cinco"], true)).toBe(false);
+  });
+
+  it("takes any text reply to a story when there is no word", () => {
+    expect(answersStory("me interesa", [""], true)).toBe(true);
+    expect(answersStory("me interesa", [""], false)).toBe(false);
+  });
+
+  it("carries the story a message answers through the webhook", () => {
+    const [event] = parseMessageEvents({
+      object: "instagram",
+      entry: [
+        {
+          id: "111",
+          messaging: [
+            {
+              sender: { id: "222" },
+              recipient: { id: "111" },
+              message: { mid: "m1", text: "5", reply_to: { story: { id: "s1", url: "https://cdn.example/s.jpg" } } },
+            },
+          ],
+        },
+      ],
+    } as never);
+    expect(event.storyId).toBe("s1");
   });
 });

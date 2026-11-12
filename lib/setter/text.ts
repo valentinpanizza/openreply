@@ -76,3 +76,29 @@ export function joinMessages(messages: string[]): string[] {
   const joined = messages.join("\n");
   return joined.length <= MAX_JOINED ? [joined] : messages;
 }
+
+/**
+ * The word a story asks people to reply with, as one token: lowercase, no
+ * accents, no punctuation or emoji ("5!!" and "Cinco" count).
+ */
+function storyTokens(text: string): string[] {
+  return text
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .split(/[^a-z0-9ñ]+/)
+    .filter(Boolean);
+}
+
+/**
+ * Whether a message answers the story's call to action. The whole message
+ * being the word always counts; inside a longer one ("pasame el 5 porfa") only
+ * as a reply to a story, so "tengo 5 empleados" in a chat does not.
+ */
+export function answersStory(text: string, keywords: string[], storyReply: boolean): boolean {
+  const words = keywords.flatMap(storyTokens);
+  if (words.length === 0) return storyReply && Boolean(text.trim());
+  const tokens = storyTokens(text);
+  if (tokens.length === 1 && words.includes(tokens[0])) return true;
+  return storyReply && tokens.length <= 6 && tokens.some((token) => words.includes(token));
+}

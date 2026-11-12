@@ -22,7 +22,7 @@ import {
   sendDirectMessageWithLinkButton,
   type InstagramContext,
 } from "@/lib/instagram/provider";
-import { sendPageAudio, sendPageLinkButton, sendPageText } from "@/lib/meta/client";
+import { getMessagingUsername, sendPageAudio, sendPageLinkButton, sendPageText } from "@/lib/meta/client";
 import { renderMessageWithTracking } from "@/lib/tracking/message";
 import type { SetterConversation } from "@/app/generated/prisma/client";
 import {
@@ -51,7 +51,7 @@ import {
   zonedToUtc,
 } from "./calendar";
 import { reelContext, type ReelCampaign } from "./context";
-import { describeAttachment, humanize, joinMessages, splitLink } from "./text";
+import { answersStory, describeAttachment, humanize, joinMessages, splitLink } from "./text";
 import { transcribeAudio } from "./transcribe";
 import { forbiddenOutput, looksLikeInjection } from "./guard";
 import { replyDelayMs, typingDelayMs } from "./timing";
@@ -552,13 +552,66 @@ async function scheduleReply(
 }
 
 /**
+ * Stories with a call to action ("respondé 5 y te paso la carpeta"): someone
+ * who replies with the word gets the setter, with SETTER_STORY_CAMPAIGN's
+ * resource, until SETTER_STORY_UNTIL. SETTER_STORY_KEYWORDS is the word (any
+ * text reply to a story when empty). The person wrote first, so there is no
+ * cold opening: the setter answers them like a reply to its first message.
+ * Returns the campaign's id, or null when the message is not one of these.
+ */
+async function storyCampaign(data: ProcessMessageJob, conversation: Conversation | null): Promise<string | null> {
+  const name = process.env.SETTER_STORY_CAMPAIGN?.trim();
+  const until = Date.parse(process.env.SETTER_STORY_UNTIL ?? "");
+  if (!name || !(until > Date.now()) || !data.messageText) return null;
+  const keywords = (process.env.SETTER_STORY_KEYWORDS ?? "").split(",");
+  // Mid-chat, only an actual reply to a story moves them to its resource.
+  if (!answersStory(data.messageText, keywords, Boolean(data.storyId))) return null;
+  if (conversation && !data.storyId) return null;
+  const accountId = conversation?.instagramAccountId ?? (await connectionId(data));
+  if (!accountId) return null;
+  const campaign = await prisma.automation.findFirst({
+    where: { instagramAccountId: accountId, name },
+    select: { id: true },
+  });
+  if (!campaign) console.error(`[Setter] SETTER_STORY_CAMPAIGN "${name}" not found`);
+  return campaign?.id ?? null;
+}
+
+async function startFromStory(
+  data: ProcessMessageJob,
+  existing: Conversation | null,
+  campaignId: string
+): Promise<Conversation | null> {
+  if (existing) {
+    if (existing.automationId === campaignId) return existing;
+    return prisma.setterConversation.update({ where: { id: existing.id }, data: { automationId: campaignId } });
+  }
+  const accountId = await connectionId(data);
+  if (!accountId) return null;
+  const account = await prisma.instagramAccount.findUnique({ where: { id: accountId } });
+  if (!account || !hasInstagramCredentials(account)) return null;
+  const context = await createInstagramContext(account, `${data.messageId}:story`);
+  const username = context.provider === "META" ? await getMessagingUsername(context.accessToken, data.senderId) : null;
+  if (!setterAllowsUser(username, data.senderId) || (await isExcluded(username))) return null;
+  if (!(await budgetLeft())) return null;
+  const key = { instagramAccountId: accountId, userId: data.senderId };
+  return prisma.setterConversation.upsert({
+    where: { instagramAccountId_userId: key },
+    create: { ...key, workspaceId: account.workspaceId, username, automationId: campaignId },
+    update: {},
+  });
+}
+
+/**
  * A DM from someone the setter is talking to. Returns true when the setter
  * owns the conversation, so the usual flows (keywords, lead question, link)
  * leave the message alone.
  */
 export async function setterTakesMessage(data: ProcessMessageJob): Promise<boolean> {
   if (!setterEnabled()) return false;
-  const conversation = await findConversation(data, data.senderId);
+  let conversation = await findConversation(data, data.senderId);
+  const story = await storyCampaign(data, conversation);
+  if (story) conversation = await startFromStory(data, conversation, story);
   if (!conversation) return false;
 
   // A voice note is read as text when it can be transcribed; otherwise the
@@ -567,7 +620,8 @@ export async function setterTakesMessage(data: ProcessMessageJob): Promise<boole
     !data.messageText && data.attachmentType === "audio" && conversation.status === "ACTIVE"
       ? await transcribeAudio(data.attachmentUrl)
       : null;
-  const text = data.messageText || (voiceText ? `[audio de voz, transcripto] ${voiceText}` : describeAttachment(data.attachmentType));
+  const said = data.messageText || (voiceText ? `[audio de voz, transcripto] ${voiceText}` : describeAttachment(data.attachmentType));
+  const text = data.storyId ? `[respondió a tu historia] ${said}` : said;
   try {
     await prisma.setterMessage.create({
       data: {
