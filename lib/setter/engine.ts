@@ -583,22 +583,14 @@ async function startFromStory(
   campaignId: string
 ): Promise<Conversation | null> {
   if (existing) {
-    // Handed to the owner some time ago: the setter stays out, but the owner
-    // hears about it, with the button that gives it back to the setter.
-    if (existing.status === "HUMAN") {
-      await notifyOwner({
-        title: `${whoIs(existing, "Alguien")} respondió la historia`,
-        message: "La charla estaba en tus manos, así que el setter no le contesta: seguí vos, o tocá \"Que siga el agente\".",
-        tags: ["raising_hand"],
-        click: conversationLink(existing),
-        actions: setterButtons(existing.id),
-      });
-    }
-    if (existing.automationId === campaignId) return existing;
-    // A new ask: the script starts over for it, even if an older chat had closed.
+    // A new ask: the script starts over for it, even if an older chat had
+    // closed or was handed to the owner (with this many chats he loses track
+    // of those, so the setter answers; 12/11). Silenced ones stay silent.
+    const reopen = existing.status === "HUMAN" ? { status: "ACTIVE" as const, statusReason: null } : {};
+    if (existing.automationId === campaignId && !("status" in reopen)) return existing;
     return prisma.setterConversation.update({
       where: { id: existing.id },
-      data: { automationId: campaignId, phase: "abridor" },
+      data: { automationId: campaignId, phase: "abridor", ...reopen },
     });
   }
   const accountId = await connectionId(data);
