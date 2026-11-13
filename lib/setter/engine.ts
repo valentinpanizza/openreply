@@ -783,8 +783,17 @@ async function waitForTurn(
  * further back (see pacing.ts), and waits for that one's turn instead. True
  * if it did.
  */
+// Someone already kept waiting this long keeps their turn: on 12/11 a story
+// brought dozens of priority answers and some first replies waited 4 h,
+// handing their turn on again and again. SETTER_PRIORITY_MAX_WAIT_MINUTES.
+export function priorityMaxWaitMs(): number {
+  const minutes = Number(process.env.SETTER_PRIORITY_MAX_WAIT_MINUTES);
+  return (Number.isFinite(minutes) && minutes > 0 ? minutes : 60) * 60_000;
+}
+
 async function giveTurnToPriority(conversation: Conversation, data: SetterReplyJob, token: string): Promise<boolean> {
   const instagramId = data.instagramAccountId;
+  if (conversation.lastUserAt && Date.now() - conversation.lastUserAt.getTime() > priorityMaxWaitMs()) return false;
   for (const turn of await priorityTurnsAhead(instagramId)) {
     // Not if that would take this answer past Instagram's 24 h window.
     if (!withinReplyWindow(conversation.lastUserAt, turn.slotAt)) return false;
