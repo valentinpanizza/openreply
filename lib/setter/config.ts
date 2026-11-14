@@ -71,3 +71,10 @@ export function setterAudios(raw = process.env.SETTER_AUDIOS ?? ""): Partial<Rec
   }
   return audios;
 }
+
+/** Minutes before the second chance (engine.ts); 0 turns it off. */
+export function secondChanceMs(env: Record<string, string | undefined> = process.env): number {
+  const raw = env.SETTER_SECOND_CHANCE_MINUTES?.trim();
+  const minutes = raw === undefined || raw === "" ? 120 : Number(raw);
+  return Number.isFinite(minutes) && minutes > 0 ? minutes * 60_000 : 0;
+}

@@ -30,6 +30,7 @@ import {
   SETTER_ECHOES_FLAG,
   callMinutes,
   ownerTimeZone,
+  secondChanceMs,
   setterAllowsUser,
   setterAudios,
   setterEnabled,
@@ -235,9 +236,11 @@ async function turnInput(
   mode: TurnInput["mode"],
   conversation: Conversation,
   campaign: Awaited<ReturnType<typeof campaignFor>>,
-  context: InstagramContext | null
+  context: InstagramContext | null,
+  secondChance = false
 ): Promise<TurnInput> {
   return {
+    ...(secondChance ? { secondChance } : {}),
     mode,
     reel: campaign ? await reelContext(campaign as ReelCampaign, context) : "",
     username: conversation.username,
@@ -549,7 +552,7 @@ function tokenKey(conversationId: string) {
 
 async function scheduleReply(
   conversation: Conversation,
-  data: { instagramAccountId: string; accountConnectionId?: string },
+  data: { instagramAccountId: string; accountConnectionId?: string; secondChance?: boolean },
   token: string,
   delay: number,
   retry = 0,
@@ -566,6 +569,7 @@ async function scheduleReply(
       token,
       ...(retry ? { retry } : {}),
       ...(wait ?? {}),
+      ...(data.secondChance ? { secondChance: true } : {}),
     },
     {
       delay,
@@ -940,6 +944,45 @@ async function sendSetterMessage(params: {
   }
 }
 
+// ─── Second chance ──────────────────────────────────────────────────────────────
+
+/**
+ * Campaigns that ask before handing the resource over (owner's notes, as in
+ * "Historias 5") leave someone who goes quiet without what the reel promised:
+ * a reason to report the account. SETTER_SECOND_CHANCE_MINUTES after the
+ * setter's last message (120 by default, 0 turns it off), if they have not
+ * written and still have no resource, it goes anyway with one soft question:
+ * a second chance for the chat. Once per conversation; anything they write
+ * first makes the job stale (the token).
+ */
+const secondChanceKey = (conversationId: string) => `setter:second:${conversationId}`;
+
+// Not "abridor": a reply job means they already wrote, and asking first leaves them there.
+const NO_SECOND_CHANCE_PHASES = new Set(["cierre", "agendando", "agendado"]);
+
+async function scheduleSecondChance(conversation: Conversation, data: SetterReplyJob): Promise<void> {
+  const delay = secondChanceMs();
+  if (!delay || onFacebook(conversation) || conversation.status !== "ACTIVE") return;
+  if (conversation.resourceSentAt || conversation.callAt || NO_SECOND_CHANCE_PHASES.has(conversation.phase)) return;
+  if (await getRedisConnection().exists(secondChanceKey(conversation.id))) return;
+  // Within Instagram's 24 h window, or it can no longer go.
+  if (!conversation.lastUserAt || conversation.lastUserAt.getTime() + 23 * 3600_000 < Date.now() + delay) return;
+  const jitter = delay * (0.85 + Math.random() * 0.3);
+  await scheduleReply(
+    conversation,
+    { instagramAccountId: data.instagramAccountId, accountConnectionId: data.accountConnectionId, secondChance: true },
+    `second:${conversation.id}:${Date.now()}`,
+    Math.round(jitter)
+  );
+}
+
+async function secondChanceStillFits(conversation: Conversation): Promise<boolean> {
+  if (conversation.resourceSentAt || conversation.callAt || NO_SECOND_CHANCE_PHASES.has(conversation.phase)) return false;
+  if (conversation.lastUserAt && conversation.lastBotAt && conversation.lastUserAt > conversation.lastBotAt) return false;
+  if (!withinReplyWindow(conversation.lastUserAt, Date.now())) return false;
+  return !(await getRedisConnection().exists(secondChanceKey(conversation.id)));
+}
+
 export async function processSetterReply(job: Job<SetterReplyJob>): Promise<void> {
   const { conversationId, token } = job.data;
   const redis = getRedisConnection();
@@ -961,6 +1004,7 @@ export async function processSetterReply(job: Job<SetterReplyJob>): Promise<void
     if (!(await stillCurrent(conversationId, token))) return;
     conversation = await prisma.setterConversation.findUnique({ where: { id: conversationId } });
     if (!conversation) return;
+    if (job.data.secondChance && !(await secondChanceStillFits(conversation))) return;
 
     const priority = isPriority(conversation, await fitOf(conversationId));
     // The daily cap is about Instagram's limits.
@@ -993,9 +1037,16 @@ export async function processSetterReply(job: Job<SetterReplyJob>): Promise<void
     const context = await createInstagramContext(account, `${job.id}:setter`);
     const campaign = await campaignFor(conversation.automationId);
     const model = setterModel();
-    const input = await turnInput("charla", conversation, campaign, context);
+    const input = await turnInput("charla", conversation, campaign, context, job.data.secondChance);
+    if (job.data.secondChance && input.resourceSent) return;
     const { decision, costUsd } = await runTurn(model, input, slotTools(conversation, campaign, false));
     await recordSpend(costUsd);
+    if (job.data.secondChance) {
+      decision.sendResource = true;
+      decision.audio = null;
+      // Once per conversation.
+      if (!(await getRedisConnection().set(secondChanceKey(conversationId), "1", "EX", 30 * 24 * 3600, "NX"))) return;
+    }
 
     // Something new came in, or the owner took over, while it was writing:
     // the newer job answers instead. A booking made meanwhile is already saved.
@@ -1105,6 +1156,9 @@ export async function processSetterReply(job: Job<SetterReplyJob>): Promise<void
       },
     });
     if (decision.handoff) await handOver(conversation, decision.handoff);
+    else if (sentSomething && !sentResource && !job.data.secondChance && campaign?.trackedLinks.length) {
+      await scheduleSecondChance(conversation, job.data);
+    }
 
     await shadowTurn(conversation, campaign, input).catch((error) =>
       console.log("[Setter] Shadow turn failed:", formatError(error))

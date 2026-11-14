@@ -214,6 +214,8 @@ export interface TurnInput {
   ownerTimeZone: string;
   // How to word this turn's stock phrases, picked at random (see wording()).
   wording?: Wording;
+  // They did not answer and never got the resource: it goes now.
+  secondChance?: boolean;
 }
 
 /**
@@ -331,7 +333,11 @@ export function buildTurnPrompt(input: TurnInput): string {
   const talkedBefore = input.transcript.some((line) => line.role !== "user");
   const w = input.wording;
   const task =
-    input.mode === "charla"
+    input.secondChance
+      ? `la persona no contestó tu último mensaje y todavía no tiene el recurso. es su segunda chance: mandale el recurso ahora (enviar_recurso), con un solo mensaje corto y cálido, sin reprocharle que no contestó, y sumale una sola pregunta suave para seguir la charla (la que quedó sin contestar, dicha de otra forma). sin audio.${
+          w ? ` el mensaje del link es "${w.link}".` : ""
+        }`
+      : input.mode === "charla"
       ? `escribí tu próxima respuesta.${
           w
             ? ` esta vez, si mandás el recurso, el mensaje del link es "${w.link}" (en lugar de las frases de ejemplo del guion o de las notas).`

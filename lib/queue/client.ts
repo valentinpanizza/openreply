@@ -121,6 +121,9 @@ export interface SetterReplyJob {
   // it was given, and how many times it has waited.
   slotAt?: number;
   waits?: number;
+  // The "second chance" (engine.ts): they went quiet before getting the
+  // resource, so it goes anyway, with one soft question to pick the chat up.
+  secondChance?: boolean;
 }
 
 // A message the connected account sent (an echo). One the setter did not send
