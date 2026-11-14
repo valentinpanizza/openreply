@@ -241,7 +241,8 @@ export async function createCallEvent({
 }: {
   start: Date;
   minutes: number;
-  email: string;
+  // Null books it without a guest: the Meet link then goes by DM.
+  email: string | null;
   summary: string;
   description: string;
 }): Promise<{ id: string; meetLink: string | null }> {
@@ -253,7 +254,7 @@ export async function createCallEvent({
       description,
       start: { dateTime: start.toISOString() },
       end: { dateTime: end.toISOString() },
-      attendees: [{ email }],
+      attendees: email ? [{ email }] : [],
       conferenceData: {
         createRequest: {
           requestId: `setter-${start.getTime()}-${Math.random().toString(36).slice(2, 10)}`,
@@ -264,6 +265,20 @@ export async function createCallEvent({
     }),
   });
   return { id: event.id, meetLink: event.hangoutLink ?? null };
+}
+
+/** The Meet link of a call event (null if it has none or is gone). */
+export async function callMeetLink(eventId: string): Promise<string | null> {
+  const event = await calendarFetch<CalendarEvent>(`/events/${encodeURIComponent(eventId)}`);
+  return event.status === "cancelled" ? null : (event.hangoutLink ?? null);
+}
+
+/** Adds the person to a call booked without their mail, and sends them the invitation. */
+export async function addCallGuest(eventId: string, email: string): Promise<void> {
+  await calendarFetch<CalendarEvent>(`/events/${encodeURIComponent(eventId)}?sendUpdates=all`, {
+    method: "PATCH",
+    body: JSON.stringify({ attendees: [{ email }] }),
+  });
 }
 
 /**

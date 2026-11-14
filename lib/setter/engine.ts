@@ -41,7 +41,9 @@ import { budgetLeft, recordSpend } from "./budget";
 import { runTurn, wording, type TranscriptLine, type TurnDecision, type TurnInput, type TurnTools } from "./brain";
 import {
   busyBetween,
+  addCallGuest,
   calendarConfigured,
+  callMeetLink,
   createCallEvent,
   createPrivateEvent,
   formatInZone,
@@ -273,9 +275,17 @@ function slotTools(conversation: Conversation, campaign: Awaited<ReturnType<type
       if (!isValidTimeZone(args.zona_horaria)) return `zona horaria inválida: ${args.zona_horaria}`;
       const match = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})$/.exec(args.inicio);
       if (!match) return "el inicio tiene que ser YYYY-MM-DDTHH:MM";
-      const email = args.email.trim().toLowerCase();
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return `ese mail no parece válido: ${args.email}`;
+      const email = (args.email ?? "").trim().toLowerCase();
+      if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return `ese mail no parece válido: ${args.email}`;
       if (conversation.callAt && conversation.callAt.getTime() > Date.now()) {
+        // Booked without a mail, and now they gave one: send the invitation.
+        if (email && !conversation.email && conversation.eventId) {
+          if (dryRun) return `(prueba) invitación mandada a ${email}.`;
+          await addCallGuest(conversation.eventId, email);
+          const updated = await prisma.setterConversation.update({ where: { id: conversation.id }, data: { email } });
+          Object.assign(conversation, updated);
+          return `listo, le llega la invitación a ${email} para la llamada ${describeCall(conversation)}. esto es para vos: decile que ya le mandaste la invitación al mail.`;
+        }
         return `ya tiene una llamada ${describeCall(conversation)}. si la quiere cambiar, usá pasar_a_humano.`;
       }
       const start = zonedToUtc(match[1], Number(match[2]), Number(match[3]), args.zona_horaria);
@@ -286,23 +296,40 @@ function slotTools(conversation: Conversation, campaign: Awaited<ReturnType<type
       const end = new Date(start.getTime() + callMinutes() * 60_000);
       if ((await busyBetween(start, end)).length > 0) return "ese horario ya no está libre: ofrecé otro.";
       const when = formatInZone(start, args.zona_horaria);
-      if (dryRun) return `(prueba) agendado para el ${when}, invitación a ${email}.`;
+      if (dryRun) {
+        return email
+          ? `(prueba) agendado para el ${when}, invitación a ${email}.`
+          : `(prueba) agendado para el ${when}, sin mail. link de meet https://meet.google.com/abc-defg-hij`;
+      }
 
       const event = await createCallEvent({
         start,
         minutes: callMinutes(),
-        email,
+        email: email || null,
         summary: `Llamada NodeStudio con ${args.nombre || conversation.username || `lead de ${conversation.channel}`}`,
         // The person sees this: nothing about them here (that goes in the prep event).
         description: "Llamada con Valentín Panizza (NodeStudio) por Google Meet.",
       });
       const updated = await prisma.setterConversation.update({
         where: { id: conversation.id },
-        data: { callAt: start, bookedAt: new Date(), eventId: event.id, email, timezone: args.zona_horaria, phase: "agendado" },
+        data: {
+          callAt: start,
+          bookedAt: new Date(),
+          eventId: event.id,
+          email: email || null,
+          timezone: args.zona_horaria,
+          phase: "agendado",
+        },
       });
       Object.assign(conversation, updated);
       await afterBooking(updated, campaign, start);
-      return `agendada: ${when} (hora de la persona), invitación con link de meet enviada a ${email}. esto es para vos, no lo copies: confirmale el día y la hora hablándole a ella ("te llega la invitación a tu mail").`;
+      if (email) {
+        return `agendada: ${when} (hora de la persona), invitación con link de meet enviada a ${email}. esto es para vos, no lo copies: confirmale el día y la hora hablándole a ella ("te llega la invitación a tu mail").`;
+      }
+      if (!event.meetLink) {
+        return `agendada: ${when} (hora de la persona), sin mail. el link de meet no salió: confirmale el día y la hora, decile que le pasás el link antes, y usá pasar_a_humano.`;
+      }
+      return `agendada: ${when} (hora de la persona), sin mail. esto es para vos, no lo copies tal cual: confirmale el día y la hora y pasale en el mensaje este link de meet, exacto: ${event.meetLink} . decile que si quiere la invitación en su calendario te pase el mail (si te lo pasa, llamá agendar_llamada otra vez con el mismo horario y el mail).`;
     },
   };
 }
@@ -395,7 +422,7 @@ async function afterBooking(
   }
   await notifyOwner({
     title: `📅 ${whoIs(conversation, "Alguien")} agendó una llamada`,
-    message: `${formatInZone(start, ownerTimeZone())} (tu hora) · ${conversation.email ?? ""}${
+    message: `${formatInZone(start, ownerTimeZone())} (tu hora) · ${conversation.email ?? "sin mail (link de Meet por DM)"}${
       prepLink ? "\nEl prompt para preparar la llamada está en tu calendario, 30 min antes." : ""
     }`,
     tags: ["calendar"],
@@ -1197,8 +1224,13 @@ export async function processSetterReminder(job: Job<SetterReminderJob>): Promis
     minute: "2-digit",
     hourCycle: "h23",
   }).format(conversation.callAt);
+  // Booked without a mail: the link goes in the reminder, not in an invitation.
+  const meetLink =
+    !conversation.email && conversation.eventId ? await callMeetLink(conversation.eventId).catch(() => null) : null;
   const text = humanize(
-    `buenas! te recuerdo que hoy a las ${time} tenemos la llamada. el link de meet esta en la invitacion que te llego al mail, nos vemos ahi`
+    meetLink
+      ? `buenas! te recuerdo que hoy a las ${time} tenemos la llamada, entras por aca ${meetLink} nos vemos ahi`
+      : `buenas! te recuerdo que hoy a las ${time} tenemos la llamada. el link de meet esta en la invitacion que te llego al mail, nos vemos ahi`
   );
   try {
     const result = onFacebook(conversation)

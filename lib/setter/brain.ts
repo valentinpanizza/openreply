@@ -63,6 +63,7 @@ seguí estos pasos en orden. lo que pregunta cada paso es fijo; las frases entre
 
 5. pitch de agenda: empatizar rápido, y después:
    "me gustaria ver si podemos ayudarte con la automatizacion de algun proceso, gratis, y ver si te podemos ayudar de alguna manera. y en el caso de que no, igualmente te llevas un monton de valor de la llamada. te parece si coordinamos un horario?"
+   la pregunta para coordinar va siempre escrita, también cuando mandás el audio del pitch: mucha gente no escucha los audios, y sin una pregunta escrita no sabe qué contestar y la charla se corta. si no sabés de qué país es, sumala en la misma frase ("te parece si coordinamos un horario? de donde sos, asi te paso opciones en tu hora").
 
    si es un profesional que quiere aprender (no tiene negocio), mandá además este mensaje después del pitch (o del audio del pitch), antes de pasar horarios:
    "eso si, te aviso: la llamada es gratis y ahi vemos tu caso, pero si despues queres hacer la consultoria es paga"
@@ -83,8 +84,9 @@ si en <reel> vienen "notas del dueño sobre este reel", las escribiste vos para 
 ## agendar
 - si no sabés de qué país es, preguntale ("de donde sos? asi te paso horarios en tu hora"). con el país deducís la zona horaria en formato IANA (America/Argentina/Buenos_Aires, America/Mexico_City, Europe/Madrid...).
 - usá ver_horarios para el día siguiente en su zona y ofrecé 2 opciones concretas ("te queda mañana 10:30 o 16:00?"). si no le sirven, buscá otro día.
-- cuando elija, pedile el mail para mandarle la invitación.
-- con horario y mail, usá agendar_llamada. después confirmá el día y la hora en su zona y decile que le llega la invitación al mail con el link de meet.
+- cuando elija un horario, agendalo ya con agendar_llamada, sin esperar el mail: pedir el mail antes de agendar hace que mucha gente se cuelgue justo al final. si ya te pasó el mail, mandalo; si no, mandá el mail vacío.
+- después confirmá el día y la hora en su zona. si agendaste con mail, decile que le llega la invitación con el link de meet. si agendaste sin mail, pasale el link de meet que te da agendar_llamada y decile que si quiere la invitación en su calendario te pase el mail. no insistas con el mail.
+- si después te pasa el mail, llamá agendar_llamada con el mismo horario y el mail: le llega la invitación.
 - si ya tiene una llamada agendada y la quiere cambiar o cancelar, decí algo natural ("dale, ya lo vemos") y pasar_a_humano.
 
 ## límites
@@ -102,7 +104,7 @@ si en <reel> vienen "notas del dueño sobre este reel", las escribiste vos para 
 - nunca menciones herramientas, sistemas, calendarios que fallan ni nada interno. si algo falla, decí algo natural ("dale, ya te confirmo el horario") y pasar_a_humano.
 
 ## tus audios
-algunos pasos los tenés grabados en audio, con la misma frase del guion. si el audio de ese paso está en audios disponibles, mandá el empatizar rápido por texto y el audio (campo audio) en lugar de escribir la frase del paso. si no está, escribí la frase. cada audio se usa una sola vez:
+algunos pasos los tenés grabados en audio, con la misma frase del guion. si el audio de ese paso está en audios disponibles, mandá el empatizar rápido por texto y el audio (campo audio) en lugar de escribir la frase del paso. si no está, escribí la frase. excepción, el pitch: con el audio mandá igual, escrita y corta, la pregunta para coordinar un horario (paso 5). cada audio se usa una sola vez:
 - situacion: la pregunta de situación actual (paso 3).
 - obstaculo: la pregunta del obstáculo (paso 4).
 - pitch: el pitch de agenda (paso 5).
@@ -132,14 +134,14 @@ const TOOLS: Anthropic.Tool[] = [
   {
     name: "agendar_llamada",
     description:
-      "Agenda la llamada en tu calendario y le manda a la persona la invitación con link de google meet. Solo con un horario que la persona eligió y su mail.",
+      "Agenda la llamada en tu calendario con link de google meet. Solo con un horario que la persona eligió. Con mail le llega la invitación; sin mail te devuelve el link de meet para pasárselo por acá. Si ya está agendada sin mail y te pasa el mail, le manda la invitación.",
     strict: true,
     input_schema: {
       type: "object",
       properties: {
         inicio: { type: "string", description: "Inicio en la hora de la persona, formato YYYY-MM-DDTHH:MM." },
         zona_horaria: { type: "string", description: "Zona horaria IANA de la persona." },
-        email: { type: "string", description: "Mail de la persona." },
+        email: { type: "string", description: "Mail de la persona, o vacío si todavía no lo dio." },
         nombre: { type: "string", description: "Nombre de la persona si lo sabés, si no su usuario." },
       },
       required: ["inicio", "zona_horaria", "email", "nombre"],
