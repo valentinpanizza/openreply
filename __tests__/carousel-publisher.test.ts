@@ -66,6 +66,7 @@ vi.mock("@/lib/trials/opencloud", async (importOriginal) => ({
 import { addDays, isDoneFolder, runCarouselPublisher } from "../lib/carousels/publisher";
 import { jpegArgs } from "../lib/carousels/jpeg";
 import { MetaApiError } from "../lib/meta/client";
+import { withProfile } from "../lib/publishing/profile";
 
 const ROOT = "Carruseles";
 const folder = (name: string) => ({ name, path: `${ROOT}/${name}`, isDir: true, size: 0 });
@@ -165,6 +166,44 @@ describe("carousel queue", () => {
   it("converts to a near-lossless JPEG", () => {
     expect(jpegArgs("in.png", "out.jpg")).toEqual(
       expect.arrayContaining(["-i", "in.png", "-q:v", "2", "out.jpg"])
+    );
+  });
+});
+
+describe("agency profile", () => {
+  it("is off unless the agency's own switch is on, whatever the owner's says", async () => {
+    expect(await withProfile("agency", () => runCarouselPublisher({ now: NOW, sleep }))).toEqual({ status: "disabled" });
+    expect(cloud.list).not.toHaveBeenCalled();
+  });
+
+  it("publishes on the agency's account, with its own keys and no campaign, leaving the owner's dates alone", async () => {
+    process.env.AGENCY_CAROUSEL_PUBLISH_ENABLED = "true";
+    process.env.AGENCY_CAROUSEL_FOLDER = ROOT;
+    redis.kv.set("agency:carousel:next", "2026-10-20T15:00:00.000Z");
+    delete texts["Captcha/caption.txt"]; // Contenido goes, its carrusel.json is ignored
+    const result = await withProfile("agency", () => runCarouselPublisher({ now: NOW, sleep }));
+
+    expect(result).toMatchObject({ status: "published", folder: `${ROOT}/Contenido`, campaign: null });
+    expect(mockPrisma.instagramAccount.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { provider: "META", username: { equals: "nodestudioai", mode: "insensitive" } } })
+    );
+    expect(mockPrisma.automation.findFirst).not.toHaveBeenCalled();
+    expect(mockPrisma.automation.update).not.toHaveBeenCalled();
+    expect(redis.kv.get("carousel:next")).toBe("2026-10-20T15:00:00.000Z");
+    expect(redis.kv.get("agency:carousel:next")!.slice(0, 10)).toBe("2026-10-23");
+    expect(redis.hashes.get("agency:carousel:published")?.has(`${ROOT}/Contenido`)).toBe(true);
+    expect(redis.hashes.has("carousel:published")).toBe(false);
+  });
+
+  it("never picks the agency's account for the owner", async () => {
+    await runCarouselPublisher({ now: NOW, sleep, dryRun: true });
+    expect(mockPrisma.instagramAccount.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          NOT: { username: { equals: "nodestudioai", mode: "insensitive" } },
+        }),
+        orderBy: { connectedAt: "asc" },
+      })
     );
   });
 });

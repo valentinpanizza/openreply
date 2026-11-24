@@ -5,6 +5,7 @@ import { attachPendingNextReels } from "@/lib/automation/attach-next-reel";
 import { runTrialPublisher } from "@/lib/trials/publisher";
 import { runCarouselPublisher } from "@/lib/carousels/publisher";
 import { runReelPublisher } from "@/lib/reels/publisher";
+import { withProfile } from "@/lib/publishing/profile";
 import { syncSetterEchoesFlag } from "@/lib/setter/engine";
 import { pollSetterCommands } from "@/lib/setter/commands";
 import { maybeSendDayReport } from "@/lib/setter/report";
@@ -93,6 +94,16 @@ async function carouselTick() {
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
     console.error("[DM Worker] Carousel publisher failed:", message);
+  }
+  // The agency's queue (AGENCY_CAROUSEL_PUBLISH_ENABLED), apart from the owner's.
+  try {
+    const result = await withProfile("agency", () => runCarouselPublisher());
+    if (result.status !== "disabled" && result.status !== "waiting") {
+      console.log("[DM Worker] Agency carousel publisher:", result);
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    console.error("[DM Worker] Agency carousel publisher failed:", message);
   } finally {
     carouselRunning = false;
   }
@@ -115,6 +126,16 @@ async function reelTick() {
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
     console.error("[DM Worker] Reel publisher failed:", message);
+  }
+  // The agency's queue (AGENCY_REEL_PUBLISH_ENABLED), apart from the owner's.
+  try {
+    const result = await withProfile("agency", () => runReelPublisher());
+    if (result.status !== "disabled" && result.status !== "waiting") {
+      console.log("[DM Worker] Agency reel publisher:", result);
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    console.error("[DM Worker] Agency reel publisher failed:", message);
   } finally {
     reelRunning = false;
   }

@@ -36,6 +36,7 @@ import {
   setterEnabled,
   setterModel,
   setterShadowModel,
+  setterSkippedAccounts,
   type AudioKey,
 } from "./config";
 import { budgetLeft, recordSpend } from "./budget";
@@ -131,6 +132,27 @@ async function connectionId(data: { accountConnectionId?: string; instagramAccou
     select: { id: true },
   });
   return account?.id ?? null;
+}
+
+// Account id → whether the setter stays quiet there (setterSkippedAccounts).
+// Usernames do not change while the worker runs, so it is asked once.
+const skippedAccountCache = new Map<string, boolean>();
+
+async function skipsAccount(accountId: string): Promise<boolean> {
+  const cached = skippedAccountCache.get(accountId);
+  if (cached !== undefined) return cached;
+  const skipped = setterSkippedAccounts();
+  if (!skipped.length) return false;
+  const account = await prisma.instagramAccount
+    .findUnique({ where: { id: accountId }, select: { username: true } })
+    .catch((error) => {
+      console.error("[Setter] Could not look up the account:", formatError(error));
+      return null;
+    });
+  if (!account) return false;
+  const skips = Boolean(account.username && skipped.includes(account.username.toLowerCase()));
+  skippedAccountCache.set(accountId, skips);
+  return skips;
 }
 
 async function findConversation(data: { accountConnectionId?: string; instagramAccountId: string }, userId: string) {
@@ -469,6 +491,7 @@ export async function setterOpening({
 }): Promise<SetterOpening | null> {
   if (!setterEnabled() || !setterAllowsUser(commenterName, commenterId)) return null;
   if (await isExcluded(commenterName)) return null;
+  if (await skipsAccount(automation.instagramAccountId)) return null;
   const key = { instagramAccountId: automation.instagramAccountId, userId: commenterId };
   let existing: Conversation | null = null;
   let conversationId: string | null = null;
@@ -647,6 +670,8 @@ async function startFromStory(
  */
 export async function setterTakesMessage(data: ProcessMessageJob): Promise<boolean> {
   if (!setterEnabled()) return false;
+  const accountId = await connectionId(data);
+  if (accountId && (await skipsAccount(accountId))) return false;
   let conversation = await findConversation(data, data.senderId);
   const story = await storyCampaign(data, conversation);
   if (story) conversation = await startFromStory(data, conversation, story);

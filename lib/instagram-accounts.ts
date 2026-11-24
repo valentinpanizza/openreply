@@ -35,9 +35,11 @@ export async function getWorkspaceInstagramAccount(
     });
   }
 
+  // No account picked: the first one connected, the owner's, not the agency's
+  // connected after it (lib/publishing/profile.ts).
   return prisma.instagramAccount.findFirst({
     where: { workspaceId },
-    orderBy: { connectedAt: "desc" },
+    orderBy: { connectedAt: "asc" },
   });
 }
 

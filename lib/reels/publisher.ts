@@ -46,6 +46,7 @@ import { OpenCloudClient, type DavEntry } from "@/lib/trials/opencloud";
 import { localDay, planDaySlots } from "@/lib/trials/publisher";
 import { ShrinkError } from "@/lib/trials/shrink";
 import { stageVideo, type StagedVideo } from "@/lib/trials/staging";
+import { isAgency, profileAccount, profileEnv, profileKey, titlePrefix } from "@/lib/publishing/profile";
 
 const CAPTION_FILES = ["caption.txt", "texto.txt"];
 const SETTINGS_FILE = "reel.json";
@@ -59,10 +60,11 @@ const MAX_VIDEO_BYTES = 300 * 1024 * 1024;
 const CONTAINER_TIMEOUT_MS = 15 * 60_000;
 const CONTAINER_POLL_MS = 5_000;
 
-const LOCK_KEY = "reel:lock";
-const INFLIGHT_KEY = "reel:inflight";
-const NEXT_KEY = "reel:next";
-const PUBLISHED_KEY = "reel:published";
+// Per profile (lib/publishing/profile.ts): the agency's are "agency:reel:...".
+const LOCK_KEY = () => profileKey("reel:lock");
+const INFLIGHT_KEY = () => profileKey("reel:inflight");
+const NEXT_KEY = () => profileKey("reel:next");
+const PUBLISHED_KEY = () => profileKey("reel:published");
 
 export interface ReelPublisherConfig {
   enabled: boolean;
@@ -77,7 +79,8 @@ export interface ReelPublisherConfig {
   ownPostWaitMinutes: number;
 }
 
-export function reelPublisherConfig(env: NodeJS.ProcessEnv = process.env): ReelPublisherConfig {
+export function reelPublisherConfig(ownerEnv: NodeJS.ProcessEnv = process.env): ReelPublisherConfig {
+  const env = profileEnv(ownerEnv, { REEL_FOLDER: "NodeStudio/Reels" });
   let [startHour, endHour] = (env.REEL_PUBLISH_HOURS ?? "11-21").split("-").map(Number);
   if (!(startHour >= 0 && endHour <= 24 && startHour < endHour)) [startHour, endHour] = [11, 21];
   const everyDays = Number(env.REEL_EVERY_DAYS ?? 1);
@@ -113,11 +116,11 @@ function slotOn(day: string, config: ReelPublisherConfig): string {
 
 /** When the next reel is due; planned (and stored) the first time it is asked. */
 async function nextDue(redis: Redis, now: Date, config: ReelPublisherConfig): Promise<Date> {
-  const stored = await redis.get(NEXT_KEY);
+  const stored = await redis.get(NEXT_KEY());
   if (stored) return new Date(stored);
   const today = localDay(now, config.timeZone);
   const first = slotOn(config.startDay && config.startDay > today ? config.startDay : today, config);
-  await redis.set(NEXT_KEY, first);
+  await redis.set(NEXT_KEY(), first);
   return new Date(first);
 }
 
@@ -129,7 +132,7 @@ async function notify(body: { title: string; message: string; tags?: string[]; c
     const response = await fetch(process.env.NTFY_URL ?? "https://ntfy.sh", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ topic, ...body }),
+      body: JSON.stringify({ topic, ...body, title: `${titlePrefix()}${body.title}` }),
       signal: AbortSignal.timeout(10_000),
     });
     if (!response.ok) console.log(`[Reel publisher] ntfy ping failed: HTTP ${response.status}`);
@@ -141,7 +144,7 @@ async function notify(body: { title: string; message: string; tags?: string[]; c
 // The same problem is reported at most once a day.
 async function warnOnce(redis: Redis, key: string, title: string, message: string) {
   console.log(`[Reel publisher] ${title}: ${message}`);
-  const fresh = await redis.set(`reel:warned:${key}`, "1", "EX", 86400, "NX");
+  const fresh = await redis.set(profileKey(`reel:warned:${key}`), "1", "EX", 86400, "NX");
   if (fresh) await notify({ title, message, tags: ["warning"] });
 }
 
@@ -206,7 +209,7 @@ async function pickCandidate(
   account: Account
 ): Promise<Candidate | null> {
   for (const folder of queueFolders(await cloud.list(config.folder))) {
-    if (await redis.hexists(PUBLISHED_KEY, folder.path)) continue;
+    if (await redis.hexists(PUBLISHED_KEY(), folder.path)) continue;
     const warn = (key: string, title: string, message: string) =>
       warnOnce(redis, `${key}:${folder.name}`, `Reel "${folder.name}": ${title}`, message);
 
@@ -236,7 +239,8 @@ async function pickCandidate(
       continue;
     }
     let campaign: Candidate["campaign"] = null;
-    if (settings.campaign) {
+    // The agency has no campaigns: nothing answers comments there.
+    if (settings.campaign && !isAgency()) {
       const found = await prisma.automation.findFirst({
         where: { instagramAccountId: account.id, name: { equals: settings.campaign, mode: "insensitive" } },
         orderBy: { createdAt: "asc" },
@@ -329,9 +333,9 @@ async function finishPublished(
   state: InFlight & { mediaId: string }
 ): Promise<ReelRunResult> {
   const problems: string[] = [];
-  await redis.hset(PUBLISHED_KEY, state.folderPath, state.mediaId);
+  await redis.hset(PUBLISHED_KEY(), state.folderPath, state.mediaId);
   const next = slotOn(addDays(localDay(now, config.timeZone), config.everyDays), config);
-  await redis.set(NEXT_KEY, next);
+  await redis.set(NEXT_KEY(), next);
 
   const permalink = await getMediaPermalink(accessToken, state.mediaId).catch(() => null);
 
@@ -355,15 +359,15 @@ async function finishPublished(
     // Only for the message.
   }
 
-  await redis.del(INFLIGHT_KEY);
+  await redis.del(INFLIGHT_KEY());
   await notify({
     title: `Reel publicado: ${state.folderName}`,
     message: [
       campaign ? `${campaign} activa` : "Sin campaña",
       left === 0
-        ? "No quedan más en la cola: corré /reel-animado para armar más."
+        ? `No quedan más en la cola${isAgency() ? ` (${config.folder})` : ": corré /reel-animado para armar más"}.`
         : `El próximo: ${new Date(next).toLocaleString("es-UY", { timeZone: config.timeZone })}${left !== null ? ` (quedan ${left})` : ""}`,
-      left === 1 ? "Queda uno solo: corré /reel-animado para que no se corte." : null,
+      left === 1 && !isAgency() ? "Queda uno solo: corré /reel-animado para que no se corte." : null,
       ...problems,
     ]
       .filter(Boolean)
@@ -386,7 +390,7 @@ async function recoverInFlight(
   config: ReelPublisherConfig,
   now: Date
 ): Promise<ReelRunResult | null> {
-  const stored = await redis.get(INFLIGHT_KEY);
+  const stored = await redis.get(INFLIGHT_KEY());
   if (!stored) return null;
   const state = JSON.parse(stored) as InFlight;
 
@@ -396,7 +400,7 @@ async function recoverInFlight(
       mediaId: state.mediaId,
     });
   }
-  await redis.del(INFLIGHT_KEY);
+  await redis.del(INFLIGHT_KEY());
   if (!state.containerId) return null; // it stopped before anything reached Instagram
   await cloud.rename(state.folderPath, `${REVIEW_PREFIX}${state.folderName}`).catch(() => undefined);
   await notify({
@@ -425,7 +429,7 @@ async function publishCandidate(
     workspaceId: account.workspaceId,
     instagramAccountId: account.id,
   };
-  const save = () => redis.set(INFLIGHT_KEY, JSON.stringify(state), "EX", 7 * 86400);
+  const save = () => redis.set(INFLIGHT_KEY(), JSON.stringify(state), "EX", 7 * 86400);
   await save();
 
   // Nothing is public on Instagram until media_publish: any failure up to it
@@ -443,7 +447,7 @@ async function publishCandidate(
     await save();
     await waitForContainer(accessToken, container.id, sleep);
   } catch (error) {
-    await redis.del(INFLIGHT_KEY);
+    await redis.del(INFLIGHT_KEY());
     let where = " Lo vuelvo a intentar en el próximo turno.";
     if (error instanceof ContainerError || error instanceof ShrinkError) {
       // The same video would be refused (or fail to shrink) again: out of the queue so the next one goes.
@@ -464,7 +468,7 @@ async function publishCandidate(
     // Meta answered with an error: it did not go out, the next tick retries.
     // No answer at all (network) leaves the in-flight record for the check.
     if (!(error instanceof MetaApiError)) throw error;
-    await redis.del(INFLIGHT_KEY);
+    await redis.del(INFLIGHT_KEY());
     await warnOnce(redis, `failed:${candidate.folder.name}:${localDay(now, config.timeZone)}`,
       `Reel: no pude publicar "${candidate.folder.name}"`, errorMessage(error));
     return { status: "failed", folder: candidate.folder.path, error: errorMessage(error) };
@@ -476,12 +480,7 @@ async function publishCandidate(
 }
 
 async function findAccount(): Promise<Account | null> {
-  const instagramId = (process.env.REEL_INSTAGRAM_ID ?? process.env.TRIAL_INSTAGRAM_ID)?.trim();
-  return prisma.instagramAccount.findFirst({
-    where: { provider: "META", ...(instagramId ? { instagramId } : {}) },
-    orderBy: { connectedAt: "asc" },
-    select: { id: true, workspaceId: true, instagramId: true, accessToken: true },
-  });
+  return profileAccount((process.env.REEL_INSTAGRAM_ID ?? process.env.TRIAL_INSTAGRAM_ID)?.trim());
 }
 
 /** True when the account published anything less than `ownPostWaitMinutes` ago. */
@@ -543,7 +542,7 @@ export async function runReelPublisher(
   if (!options.force && (await postedRecently(account.accessToken, now, config))) return { status: "waiting" };
 
   const lock = randomUUID();
-  if (!(await redis.set(LOCK_KEY, lock, "EX", 3600, "NX"))) return { status: "busy" };
+  if (!(await redis.set(LOCK_KEY(), lock, "EX", 3600, "NX"))) return { status: "busy" };
   try {
     const recovered = await recoverInFlight(cloud, redis, account, config, now);
     if (recovered) return recovered;
@@ -561,6 +560,6 @@ export async function runReelPublisher(
     await warnOnce(redis, `error:${localDay(now, config.timeZone)}`, "Reel: algo falló", errorMessage(error)).catch(() => undefined);
     throw error;
   } finally {
-    if ((await redis.get(LOCK_KEY)) === lock) await redis.del(LOCK_KEY);
+    if ((await redis.get(LOCK_KEY())) === lock) await redis.del(LOCK_KEY());
   }
 }

@@ -58,9 +58,10 @@ export async function GET(request: NextRequest) {
         dmsSentThisPeriod: true,
       },
     }),
+    // The owner's account (first connected), not the agency's (lib/publishing/profile.ts).
     prisma.instagramAccount.findFirst({
       where: { workspaceId },
-      orderBy: { connectedAt: "desc" },
+      orderBy: { connectedAt: "asc" },
       select: {
         id: true,
         username: true,

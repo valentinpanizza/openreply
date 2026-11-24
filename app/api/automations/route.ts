@@ -324,9 +324,11 @@ export async function POST(request: NextRequest) {
       ? prisma.instagramAccount.findFirst({
           where: { id: requestedInstagramAccountId, workspaceId },
         })
-      : prisma.instagramAccount.findFirst({
+      : // No account picked: the first one connected, the owner's, so a new
+        // campaign never lands on the agency's account (lib/publishing/profile.ts).
+        prisma.instagramAccount.findFirst({
           where: { workspaceId },
-          orderBy: { connectedAt: "desc" },
+          orderBy: { connectedAt: "asc" },
         }),
   ]);
 

@@ -14,6 +14,19 @@ export function setterEnabled(): boolean {
 // receives a job it does not know.
 export const SETTER_ECHOES_FLAG = "setter:echoes";
 
+/**
+ * Accounts the setter never talks from (usernames, comma-separated, lowercase):
+ * SETTER_SKIP_ACCOUNTS, or else the agency's (lib/publishing/profile.ts), which
+ * only publishes. "-" empties the list.
+ */
+export function setterSkippedAccounts(env: Record<string, string | undefined> = process.env): string[] {
+  const raw = env.SETTER_SKIP_ACCOUNTS ?? (env.AGENCY_INSTAGRAM_USERNAME ?? "nodestudioai");
+  return raw
+    .split(",")
+    .map((entry) => entry.trim().replace(/^@/, "").toLowerCase())
+    .filter((entry) => entry && entry !== "-");
+}
+
 // Instagram usernames (with or without @) or user ids, comma-separated.
 export function setterAllowsUser(username: string | null | undefined, userId: string): boolean {
   const only = (process.env.SETTER_ONLY_USERS ?? "")

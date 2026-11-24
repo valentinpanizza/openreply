@@ -44,6 +44,7 @@ import { OpenCloudClient, type DavEntry } from "@/lib/trials/opencloud";
 import { stageFile, type StagedFile } from "@/lib/trials/staging";
 import { localDay, planDaySlots } from "@/lib/trials/publisher";
 import { toJpeg } from "./jpeg";
+import { isAgency, profileAccount, profileEnv, profileKey, titlePrefix } from "@/lib/publishing/profile";
 
 const CAPTION_FILES = ["caption.txt", "texto.txt"];
 const SETTINGS_FILE = "carrusel.json";
@@ -58,10 +59,11 @@ const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 const CONTAINER_TIMEOUT_MS = 10 * 60_000;
 const CONTAINER_POLL_MS = 5_000;
 
-const LOCK_KEY = "carousel:lock";
-const INFLIGHT_KEY = "carousel:inflight";
-const NEXT_KEY = "carousel:next";
-const PUBLISHED_KEY = "carousel:published";
+// Per profile (lib/publishing/profile.ts): the agency's are "agency:carousel:...".
+const LOCK_KEY = () => profileKey("carousel:lock");
+const INFLIGHT_KEY = () => profileKey("carousel:inflight");
+const NEXT_KEY = () => profileKey("carousel:next");
+const PUBLISHED_KEY = () => profileKey("carousel:published");
 
 export interface CarouselPublisherConfig {
   enabled: boolean;
@@ -77,7 +79,8 @@ export interface CarouselPublisherConfig {
   ownPostWaitMinutes: number;
 }
 
-export function carouselPublisherConfig(env: NodeJS.ProcessEnv = process.env): CarouselPublisherConfig {
+export function carouselPublisherConfig(ownerEnv: NodeJS.ProcessEnv = process.env): CarouselPublisherConfig {
+  const env = profileEnv(ownerEnv, { CAROUSEL_FOLDER: "NodeStudio/Carruseles" });
   let [startHour, endHour] = (env.CAROUSEL_PUBLISH_HOURS ?? env.TRIAL_PUBLISH_HOURS ?? "11-21").split("-").map(Number);
   if (!(startHour >= 0 && endHour <= 24 && startHour < endHour)) [startHour, endHour] = [11, 21];
   const everyDays = Number(env.CAROUSEL_EVERY_DAYS ?? 3);
@@ -112,11 +115,11 @@ function slotOn(day: string, config: CarouselPublisherConfig, random?: () => num
 
 /** When the next carousel is due; planned (and stored) the first time it is asked. */
 async function nextDue(redis: Redis, now: Date, config: CarouselPublisherConfig): Promise<Date> {
-  const stored = await redis.get(NEXT_KEY);
+  const stored = await redis.get(NEXT_KEY());
   if (stored) return new Date(stored);
   const today = localDay(now, config.timeZone);
   const first = slotOn(config.startDay && config.startDay > today ? config.startDay : today, config);
-  await redis.set(NEXT_KEY, first);
+  await redis.set(NEXT_KEY(), first);
   return new Date(first);
 }
 
@@ -130,7 +133,7 @@ async function notify(body: { title: string; message: string; tags?: string[]; c
     const response = await fetch(process.env.NTFY_URL ?? "https://ntfy.sh", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ topic, ...body }),
+      body: JSON.stringify({ topic, ...body, title: `${titlePrefix()}${body.title}` }),
       signal: AbortSignal.timeout(10_000),
     });
     if (!response.ok) console.log(`[Carousel publisher] ntfy ping failed: HTTP ${response.status}`);
@@ -142,7 +145,7 @@ async function notify(body: { title: string; message: string; tags?: string[]; c
 // The same problem is reported at most once a day.
 async function warnOnce(redis: Redis, key: string, title: string, message: string) {
   console.log(`[Carousel publisher] ${title}: ${message}`);
-  const fresh = await redis.set(`carousel:warned:${key}`, "1", "EX", 86400, "NX");
+  const fresh = await redis.set(profileKey(`carousel:warned:${key}`), "1", "EX", 86400, "NX");
   if (fresh) await notify({ title, message, tags: ["warning"] });
 }
 
@@ -219,7 +222,7 @@ async function pickCandidate(
     .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
 
   for (const folder of folders) {
-    if (await redis.hexists(PUBLISHED_KEY, folder.path)) continue;
+    if (await redis.hexists(PUBLISHED_KEY(), folder.path)) continue;
     const images = (await cloud.list(folder.path))
       .filter((entry) => !entry.isDir && IMAGE_RE.test(entry.name))
       .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
@@ -247,7 +250,8 @@ async function pickCandidate(
       continue;
     }
 
-    const campaignName = await readCampaignName(cloud, folder);
+    // The agency has no campaigns: nothing answers comments there.
+    const campaignName = isAgency() ? null : await readCampaignName(cloud, folder);
     if (campaignName && typeof campaignName === "object") {
       await warn("settings", `revisá ${SETTINGS_FILE}`, campaignName.error);
       continue;
@@ -330,9 +334,9 @@ async function finishPublished(
   state: InFlight & { mediaId: string }
 ): Promise<CarouselRunResult> {
   const problems: string[] = [];
-  await redis.hset(PUBLISHED_KEY, state.folderPath, state.mediaId);
+  await redis.hset(PUBLISHED_KEY(), state.folderPath, state.mediaId);
   const next = slotOn(addDays(localDay(now, config.timeZone), config.everyDays), config);
-  await redis.set(NEXT_KEY, next);
+  await redis.set(NEXT_KEY(), next);
 
   const permalink = await getMediaPermalink(accessToken, state.mediaId).catch(() => null);
 
@@ -360,15 +364,15 @@ async function finishPublished(
     }
   }
 
-  await redis.del(INFLIGHT_KEY);
+  await redis.del(INFLIGHT_KEY());
   await notify({
     title: `Carrusel publicado: ${state.folderName}`,
     message: [
       state.campaignName ? `Campaña "${state.campaignName}" activa` : "Sin campaña",
       left === 0
-        ? "No quedan más en la cola: corré /carrusel-nuevo para armar uno desde los reels."
+        ? `No quedan más en la cola${isAgency() ? ` (${config.folder})` : ": corré /carrusel-nuevo para armar uno desde los reels"}.`
         : `El próximo: ${new Date(next).toLocaleString("es-UY", { timeZone: config.timeZone })}${left !== null ? ` (quedan ${left})` : ""}`,
-      left === 1 ? "Queda uno solo: corré /carrusel-nuevo para que no se corte." : null,
+      left === 1 && !isAgency() ? "Queda uno solo: corré /carrusel-nuevo para que no se corte." : null,
       ...problems,
     ]
       .filter(Boolean)
@@ -391,7 +395,7 @@ async function recoverInFlight(
   config: CarouselPublisherConfig,
   now: Date
 ): Promise<CarouselRunResult | null> {
-  const stored = await redis.get(INFLIGHT_KEY);
+  const stored = await redis.get(INFLIGHT_KEY());
   if (!stored) return null;
   const state = JSON.parse(stored) as InFlight;
 
@@ -401,7 +405,7 @@ async function recoverInFlight(
       mediaId: state.mediaId,
     });
   }
-  await redis.del(INFLIGHT_KEY);
+  await redis.del(INFLIGHT_KEY());
   if (!state.containerId) return null; // it stopped before anything reached Instagram
   await cloud.rename(state.folderPath, `${REVIEW_PREFIX}${state.folderName}`).catch(() => undefined);
   await notify({
@@ -428,7 +432,7 @@ async function publishCandidate(
     campaignId: candidate.campaign?.id ?? null,
     campaignName: candidate.campaign?.name ?? null,
   };
-  const save = () => redis.set(INFLIGHT_KEY, JSON.stringify(state), "EX", 7 * 86400);
+  const save = () => redis.set(INFLIGHT_KEY(), JSON.stringify(state), "EX", 7 * 86400);
   await save();
 
   // Nothing is public on Instagram until media_publish: any failure up to it
@@ -453,7 +457,7 @@ async function publishCandidate(
     await save();
     await waitForContainer(accessToken, container.id, sleep);
   } catch (error) {
-    await redis.del(INFLIGHT_KEY);
+    await redis.del(INFLIGHT_KEY());
     await notify({
       title: `Carrusel: no pude publicar "${candidate.folder.name}"`,
       message: `${errorMessage(error)}. Lo vuelvo a intentar en el próximo turno.`,
@@ -471,7 +475,7 @@ async function publishCandidate(
     // Meta answered with an error: it did not go out, the next tick retries.
     // No answer at all (network) leaves the in-flight record for the check.
     if (!(error instanceof MetaApiError)) throw error;
-    await redis.del(INFLIGHT_KEY);
+    await redis.del(INFLIGHT_KEY());
     await notify({
       title: `Carrusel: no pude publicar "${candidate.folder.name}"`,
       message: errorMessage(error),
@@ -486,12 +490,7 @@ async function publishCandidate(
 }
 
 async function findAccount(): Promise<Account | null> {
-  const instagramId = (process.env.CAROUSEL_INSTAGRAM_ID ?? process.env.TRIAL_INSTAGRAM_ID)?.trim();
-  return prisma.instagramAccount.findFirst({
-    where: { provider: "META", ...(instagramId ? { instagramId } : {}) },
-    orderBy: { connectedAt: "asc" },
-    select: { id: true, workspaceId: true, instagramId: true, accessToken: true },
-  });
+  return profileAccount((process.env.CAROUSEL_INSTAGRAM_ID ?? process.env.TRIAL_INSTAGRAM_ID)?.trim());
 }
 
 /** True when the account published anything less than `ownPostWaitMinutes` ago. */
@@ -553,7 +552,7 @@ export async function runCarouselPublisher(
   if (!options.force && (await postedRecently(account.accessToken, now, config))) return { status: "waiting" };
 
   const lock = randomUUID();
-  if (!(await redis.set(LOCK_KEY, lock, "EX", 3600, "NX"))) return { status: "busy" };
+  if (!(await redis.set(LOCK_KEY(), lock, "EX", 3600, "NX"))) return { status: "busy" };
   try {
     const recovered = await recoverInFlight(cloud, redis, account, config, now);
     if (recovered) return recovered;
@@ -571,7 +570,7 @@ export async function runCarouselPublisher(
     await warnOnce(redis, `error:${localDay(now, config.timeZone)}`, "Carrusel: algo falló", errorMessage(error)).catch(() => undefined);
     throw error;
   } finally {
-    if ((await redis.get(LOCK_KEY)) === lock) await redis.del(LOCK_KEY);
+    if ((await redis.get(LOCK_KEY())) === lock) await redis.del(LOCK_KEY());
   }
 }
 

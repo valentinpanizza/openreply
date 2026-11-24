@@ -48,6 +48,7 @@ import { OpenCloudClient, type DavEntry } from "./opencloud";
 import { ShrinkError } from "./shrink";
 import { changeSpeed, parseSpeed } from "./speed";
 import { stageVideo, type StagedVideo } from "./staging";
+import { profileAccount } from "@/lib/publishing/profile";
 
 const CAPTION_FILE = "texto.txt";
 const SETTINGS_FILE = "trial.json";
@@ -628,13 +629,9 @@ async function publishCandidate(
   return finishPublished(cloud, redis, accessToken, { ...state, mediaId });
 }
 
+// Always the owner's account, never the agency's (lib/publishing/profile.ts).
 async function findAccount(): Promise<Account | null> {
-  const instagramId = process.env.TRIAL_INSTAGRAM_ID?.trim();
-  return prisma.instagramAccount.findFirst({
-    where: { provider: "META", ...(instagramId ? { instagramId } : {}) },
-    orderBy: { connectedAt: "asc" },
-    select: { id: true, workspaceId: true, instagramId: true, accessToken: true },
-  });
+  return profileAccount(process.env.TRIAL_INSTAGRAM_ID?.trim());
 }
 
 /**
