@@ -91,3 +91,10 @@ export function secondChanceMs(env: Record<string, string | undefined> = process
   const minutes = raw === undefined || raw === "" ? 120 : Number(raw);
   return Number.isFinite(minutes) && minutes > 0 ? minutes * 60_000 : 0;
 }
+
+/** Minutes before the follow-up (engine.ts); 0 turns it off. */
+export function followUpMs(env: Record<string, string | undefined> = process.env): number {
+  const raw = env.SETTER_FOLLOW_UP_MINUTES?.trim();
+  const minutes = raw === undefined || raw === "" ? 300 : Number(raw);
+  return Number.isFinite(minutes) && minutes > 0 ? minutes * 60_000 : 0;
+}

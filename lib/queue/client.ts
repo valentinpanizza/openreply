@@ -124,6 +124,9 @@ export interface SetterReplyJob {
   // The "second chance" (engine.ts): they went quiet before getting the
   // resource, so it goes anyway, with one soft question to pick the chat up.
   secondChance?: boolean;
+  // The follow-up (engine.ts): someone who qualifies went quiet close to the
+  // call, so one message offers them concrete times.
+  followUp?: boolean;
 }
 
 // A message the connected account sent (an echo). One the setter did not send

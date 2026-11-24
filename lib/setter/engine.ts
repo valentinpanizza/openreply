@@ -29,6 +29,7 @@ import {
   AUDIO_KEYS,
   SETTER_ECHOES_FLAG,
   callMinutes,
+  followUpMs,
   ownerTimeZone,
   secondChanceMs,
   setterAllowsUser,
@@ -85,6 +86,7 @@ import {
   urlVariants,
 } from "./facebook";
 import { callPrepPrompt } from "./prep";
+import { followUpAt, wantsFollowUp } from "./follow-up";
 
 /**
  * The AI setter: instead of the campaign's fixed messages, Claude talks to the
@@ -259,9 +261,11 @@ async function turnInput(
   conversation: Conversation,
   campaign: Awaited<ReturnType<typeof campaignFor>>,
   context: InstagramContext | null,
-  secondChance = false
+  secondChance = false,
+  followUp = false
 ): Promise<TurnInput> {
   return {
+    ...(followUp ? { followUp } : {}),
     ...(secondChance ? { secondChance } : {}),
     mode,
     reel: campaign ? await reelContext(campaign as ReelCampaign, context) : "",
@@ -575,7 +579,7 @@ function tokenKey(conversationId: string) {
 
 async function scheduleReply(
   conversation: Conversation,
-  data: { instagramAccountId: string; accountConnectionId?: string; secondChance?: boolean },
+  data: { instagramAccountId: string; accountConnectionId?: string; secondChance?: boolean; followUp?: boolean },
   token: string,
   delay: number,
   retry = 0,
@@ -593,6 +597,7 @@ async function scheduleReply(
       ...(retry ? { retry } : {}),
       ...(wait ?? {}),
       ...(data.secondChance ? { secondChance: true } : {}),
+      ...(data.followUp ? { followUp: true } : {}),
     },
     {
       delay,
@@ -816,6 +821,8 @@ async function waitForTurn(
   slotAt: number
 ): Promise<void> {
   if (!withinReplyWindow(conversation.lastUserAt, slotAt)) {
+    // A follow-up answers nobody: it just does not go.
+    if (data.followUp) return;
     // Without a notice each: a pause of hours runs out dozens of them (the
     // pause's own notice says so, and setter.ts list shows them).
     await handOver(
@@ -1008,6 +1015,39 @@ async function secondChanceStillFits(conversation: Conversation): Promise<boolea
   return !(await getRedisConnection().exists(secondChanceKey(conversation.id)));
 }
 
+// ─── Follow-up ──────────────────────────────────────────────────────────────────
+
+/**
+ * One message, with concrete times for the call, to someone who qualifies and
+ * went quiet near the end (follow-up.ts). SETTER_FOLLOW_UP_MINUTES after the
+ * setter's last message (300 by default, 0 turns it off), once per
+ * conversation; anything they or the owner write first makes it stale.
+ */
+const followUpKey = (conversationId: string) => `setter:follow:${conversationId}`;
+
+async function scheduleFollowUp(conversation: Conversation, data: SetterReplyJob): Promise<boolean> {
+  const delay = followUpMs();
+  if (!delay || !wantsFollowUp(conversation)) return false;
+  if (await getRedisConnection().exists(followUpKey(conversation.id))) return false;
+  const now = Date.now();
+  const at = followUpAt(now, Math.round(delay * (0.85 + Math.random() * 0.3)), conversation.lastUserAt);
+  if (!at) return false;
+  await scheduleReply(
+    conversation,
+    { instagramAccountId: data.instagramAccountId, accountConnectionId: data.accountConnectionId, followUp: true },
+    `follow:${conversation.id}:${now}`,
+    at - now
+  );
+  return true;
+}
+
+async function followUpStillFits(conversation: Conversation): Promise<boolean> {
+  if (!wantsFollowUp(conversation)) return false;
+  if (conversation.lastUserAt && conversation.lastBotAt && conversation.lastUserAt > conversation.lastBotAt) return false;
+  if (!withinReplyWindow(conversation.lastUserAt, Date.now())) return false;
+  return !(await getRedisConnection().exists(followUpKey(conversation.id)));
+}
+
 export async function processSetterReply(job: Job<SetterReplyJob>): Promise<void> {
   const { conversationId, token } = job.data;
   const redis = getRedisConnection();
@@ -1030,6 +1070,7 @@ export async function processSetterReply(job: Job<SetterReplyJob>): Promise<void
     conversation = await prisma.setterConversation.findUnique({ where: { id: conversationId } });
     if (!conversation) return;
     if (job.data.secondChance && !(await secondChanceStillFits(conversation))) return;
+    if (job.data.followUp && !(await followUpStillFits(conversation))) return;
 
     const priority = isPriority(conversation, await fitOf(conversationId));
     // The daily cap is about Instagram's limits.
@@ -1053,6 +1094,7 @@ export async function processSetterReply(job: Job<SetterReplyJob>): Promise<void
     if (!priority && (await giveTurnToPriority(conversation, job.data, token))) return;
 
     if (!(await budgetLeft())) {
+      if (job.data.followUp) return;
       await handOver(conversation, "Se terminó el presupuesto diario del setter (SETTER_DAILY_BUDGET_USD).");
       return;
     }
@@ -1062,7 +1104,7 @@ export async function processSetterReply(job: Job<SetterReplyJob>): Promise<void
     const context = await createInstagramContext(account, `${job.id}:setter`);
     const campaign = await campaignFor(conversation.automationId);
     const model = setterModel();
-    const input = await turnInput("charla", conversation, campaign, context, job.data.secondChance);
+    const input = await turnInput("charla", conversation, campaign, context, job.data.secondChance, job.data.followUp);
     if (job.data.secondChance && input.resourceSent) return;
     const { decision, costUsd } = await runTurn(model, input, slotTools(conversation, campaign, false));
     await recordSpend(costUsd);
@@ -1071,6 +1113,13 @@ export async function processSetterReply(job: Job<SetterReplyJob>): Promise<void
       decision.audio = null;
       // Once per conversation.
       if (!(await getRedisConnection().set(secondChanceKey(conversationId), "1", "EX", 30 * 24 * 3600, "NX"))) return;
+    }
+
+    if (job.data.followUp) {
+      decision.audio = null;
+      if (!input.resourceSent && input.resourceAvailable && decision.messages.length) decision.sendResource = true;
+      // Once per conversation.
+      if (!(await getRedisConnection().set(followUpKey(conversationId), "1", "EX", 30 * 24 * 3600, "NX"))) return;
     }
 
     // Something new came in, or the owner took over, while it was writing:
@@ -1181,8 +1230,12 @@ export async function processSetterReply(job: Job<SetterReplyJob>): Promise<void
       },
     });
     if (decision.handoff) await handOver(conversation, decision.handoff);
-    else if (sentSomething && !sentResource && !job.data.secondChance && campaign?.trackedLinks.length) {
-      await scheduleSecondChance(conversation, job.data);
+    else if (sentSomething && !job.data.secondChance && !job.data.followUp) {
+      // One nudge at a time (they share the token): near the call, the follow-up.
+      const followed = await scheduleFollowUp(conversation, job.data);
+      if (!followed && !sentResource && campaign?.trackedLinks.length) {
+        await scheduleSecondChance(conversation, job.data);
+      }
     }
 
     await shadowTurn(conversation, campaign, input).catch((error) =>
