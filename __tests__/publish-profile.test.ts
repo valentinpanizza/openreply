@@ -33,12 +33,12 @@ describe("publishing profile", () => {
   });
 
   it("knows the agency's username", () => {
-    expect(agencyUsername({})).toBe("nodestudioai");
+    expect(agencyUsername({})).toBe("nodestudio.ai");
     expect(agencyUsername({ AGENCY_INSTAGRAM_USERNAME: " @OtraCuenta " })).toBe("otracuenta");
   });
 
   it("keeps the setter off the agency's account unless told otherwise", () => {
-    expect(setterSkippedAccounts({})).toEqual(["nodestudioai"]);
+    expect(setterSkippedAccounts({})).toEqual(["nodestudio.ai"]);
     expect(setterSkippedAccounts({ SETTER_SKIP_ACCOUNTS: "@a, B" })).toEqual(["a", "b"]);
     expect(setterSkippedAccounts({ SETTER_SKIP_ACCOUNTS: "-" })).toEqual([]);
   });

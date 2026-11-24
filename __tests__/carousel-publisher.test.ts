@@ -185,7 +185,7 @@ describe("agency profile", () => {
 
     expect(result).toMatchObject({ status: "published", folder: `${ROOT}/Contenido`, campaign: null });
     expect(mockPrisma.instagramAccount.findFirst).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { provider: "META", username: { equals: "nodestudioai", mode: "insensitive" } } })
+      expect.objectContaining({ where: { provider: "META", username: { equals: "nodestudio.ai", mode: "insensitive" } } })
     );
     expect(mockPrisma.automation.findFirst).not.toHaveBeenCalled();
     expect(mockPrisma.automation.update).not.toHaveBeenCalled();
@@ -200,7 +200,7 @@ describe("agency profile", () => {
     expect(mockPrisma.instagramAccount.findFirst).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          NOT: { username: { equals: "nodestudioai", mode: "insensitive" } },
+          NOT: { username: { equals: "nodestudio.ai", mode: "insensitive" } },
         }),
         orderBy: { connectedAt: "asc" },
       })

@@ -20,7 +20,7 @@ export const SETTER_ECHOES_FLAG = "setter:echoes";
  * only publishes. "-" empties the list.
  */
 export function setterSkippedAccounts(env: Record<string, string | undefined> = process.env): string[] {
-  const raw = env.SETTER_SKIP_ACCOUNTS ?? (env.AGENCY_INSTAGRAM_USERNAME ?? "nodestudioai");
+  const raw = env.SETTER_SKIP_ACCOUNTS ?? (env.AGENCY_INSTAGRAM_USERNAME ?? "nodestudio.ai");
   return raw
     .split(",")
     .map((entry) => entry.trim().replace(/^@/, "").toLowerCase())

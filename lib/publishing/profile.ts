@@ -2,7 +2,7 @@
  * Which Instagram account the carousel and reel publishers work for.
  *
  * "owner" is the owner's own account, the one they always used. "agency" is a
- * second account (AGENCY_INSTAGRAM_USERNAME, default "nodestudioai") with its
+ * second account (AGENCY_INSTAGRAM_USERNAME, default "nodestudio.ai") with its
  * own OpenCloud queue, its own schedule and its own Redis keys, so publishing
  * there never moves the owner's dates. Its settings are the same variables
  * with AGENCY_ in front (AGENCY_CAROUSEL_PUBLISH_ENABLED, AGENCY_REEL_FOLDER...),
@@ -33,7 +33,7 @@ export function isAgency(): boolean {
 
 /** The agency's Instagram username, lowercase, without @. */
 export function agencyUsername(env: Env = process.env): string {
-  return (env.AGENCY_INSTAGRAM_USERNAME ?? "nodestudioai").trim().replace(/^@/, "").toLowerCase();
+  return (env.AGENCY_INSTAGRAM_USERNAME ?? "nodestudio.ai").trim().replace(/^@/, "").toLowerCase();
 }
 
 /** Redis key for the current profile: "carousel:next" or "agency:carousel:next". */
