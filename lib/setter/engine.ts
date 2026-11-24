@@ -87,6 +87,7 @@ import {
 } from "./facebook";
 import { callPrepPrompt } from "./prep";
 import { followUpAt, wantsFollowUp } from "./follow-up";
+import { evidentBusiness, justThanks } from "./triage";
 
 /**
  * The AI setter: instead of the campaign's fixed messages, Claude talks to the
@@ -810,6 +811,32 @@ async function stillCurrent(conversationId: string, token: string): Promise<bool
   return current === token && conversation?.status === "ACTIVE";
 }
 
+/** Worth a call by what is known of them, or by their account (triage.ts). */
+async function hasPriority(conversation: Conversation): Promise<boolean> {
+  const fit = await fitOf(conversation.id);
+  if (isPriority(conversation, fit)) return true;
+  if (fit === "no" || !conversation.automationId) return false;
+  const campaign = await prisma.automation.findUnique({
+    where: { id: conversation.automationId },
+    select: { name: true },
+  });
+  return evidentBusiness(conversation.username, campaign?.name);
+}
+
+/** A closed chat, resource delivered, where all they said since is thanks. */
+async function nothingToAnswer(conversation: Conversation): Promise<boolean> {
+  if (conversation.phase !== "cierre" || conversation.callAt || !conversation.resourceSentAt) return false;
+  const rows = await prisma.setterMessage.findMany({
+    where: { conversationId: conversation.id, role: { in: ["user", "bot", "owner"] } },
+    orderBy: { createdAt: "desc" },
+    take: 10,
+    select: { role: true, kind: true, text: true },
+  });
+  const answered = rows.findIndex((row) => row.role !== "user");
+  const pending = answered < 0 ? rows : rows.slice(0, answered);
+  return pending.length > 0 && pending.every((row) => row.kind === "text" && justThanks(row.text));
+}
+
 /**
  * Puts the answer off until `slotAt`, its turn to send (see pacing.ts). Past
  * Instagram's 24 h window it can no longer go, and the owner takes it.
@@ -836,7 +863,7 @@ async function waitForTurn(
     slotAt,
     waits: (data.waits ?? 0) + 1,
   });
-  if (isPriority(conversation, await fitOf(conversation.id))) {
+  if (await hasPriority(conversation)) {
     await listPriorityTurn(data.instagramAccountId, jobId, slotAt);
   }
 }
@@ -1071,8 +1098,12 @@ export async function processSetterReply(job: Job<SetterReplyJob>): Promise<void
     if (!conversation) return;
     if (job.data.secondChance && !(await secondChanceStillFits(conversation))) return;
     if (job.data.followUp && !(await followUpStillFits(conversation))) return;
+    if (!job.data.secondChance && !job.data.followUp && (await nothingToAnswer(conversation))) {
+      if (job.id) await unlistPriorityTurn(job.data.instagramAccountId, job.id);
+      return;
+    }
 
-    const priority = isPriority(conversation, await fitOf(conversationId));
+    const priority = await hasPriority(conversation);
     // The daily cap is about Instagram's limits.
     if (!onFacebook(conversation) && (await overReplyCap()) && !priority) {
       await deferToMorning(conversation, job.data, token);
