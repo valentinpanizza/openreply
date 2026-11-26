@@ -1,4 +1,5 @@
 import { getMetaGraphApiVersion, requireEnv } from "@/lib/env";
+import { waitForSendSlot } from "@/lib/utils/send-gate";
 
 function instagramGraphBase() {
   return `https://graph.instagram.com/${getMetaGraphApiVersion()}`;
@@ -155,6 +156,7 @@ export async function sendPrivateReply(
   // stays plain text; a tap comes back as an ordinary message from the person.
   quickReplies: { title: string; payload: string }[] = []
 ): Promise<{ recipient_id: string; message_id: string }> {
+  await waitForSendSlot(`ig:${instagramAccountId}`);
   const response = await fetch(
     `${instagramGraphBase()}/${instagramAccountId}/messages`,
     {
@@ -205,6 +207,7 @@ export async function sendPrivateReplyWithButton(
     .slice(0, 3)
     .map((b) => ({ type: "postback", title: b.title.slice(0, 20), payload: b.payload }));
 
+  await waitForSendSlot(`ig:${instagramAccountId}`);
   const response = await fetch(
     `${instagramGraphBase()}/${instagramAccountId}/messages`,
     {
@@ -253,6 +256,7 @@ export async function sendDirectMessageWithButton(
     .slice(0, 3)
     .map((b) => ({ type: "postback", title: b.title.slice(0, 20), payload: b.payload }));
 
+  await waitForSendSlot(`ig:${instagramAccountId}`);
   const response = await fetch(
     `${instagramGraphBase()}/${instagramAccountId}/messages`,
     {
@@ -360,6 +364,7 @@ export async function sendPrivateReplyWithLinkButton(
   text: string,
   buttons: LinkButton[]
 ): Promise<{ recipient_id: string; message_id: string }> {
+  await waitForSendSlot(`ig:${instagramAccountId}`);
   const response = await fetch(
     `${instagramGraphBase()}/${instagramAccountId}/messages`,
     {
@@ -397,6 +402,7 @@ export async function sendDirectMessage(
   userId: string,
   message: string
 ): Promise<{ recipient_id: string; message_id: string }> {
+  await waitForSendSlot(`ig:${instagramAccountId}`);
   const response = await fetch(
     `${instagramGraphBase()}/${instagramAccountId}/messages`,
     {
@@ -424,6 +430,7 @@ async function sendPageMessage(
   userId: string,
   message: Record<string, unknown>
 ): Promise<{ recipient_id: string; message_id: string }> {
+  await waitForSendSlot("fb:page");
   const response = await fetch(`${facebookGraphBase()}/me/messages`, {
     method: "POST",
     headers: {
@@ -469,6 +476,7 @@ export async function sendDirectAttachment(
   type: "audio" | "image" | "video",
   url: string
 ): Promise<{ recipient_id: string; message_id: string }> {
+  await waitForSendSlot(`ig:${instagramAccountId}`);
   const response = await fetch(
     `${instagramGraphBase()}/${instagramAccountId}/messages`,
     {
@@ -498,6 +506,7 @@ export async function sendDirectMessageWithLinkButton(
   text: string,
   buttons: LinkButton[]
 ): Promise<{ recipient_id: string; message_id: string }> {
+  await waitForSendSlot(`ig:${instagramAccountId}`);
   const response = await fetch(
     `${instagramGraphBase()}/${instagramAccountId}/messages`,
     {
