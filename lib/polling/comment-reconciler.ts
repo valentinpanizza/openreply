@@ -300,7 +300,25 @@ async function sweepCampaign({
  * a single comment on it has arrived. That is enough for the failure being
  * covered here, where some webhooks arrive and others do not.
  */
+// The lookup reads every webhook of the last 90 days (~1 s once there are
+// 100k+ of them) and ran for every campaign on every sweep. Ad ids rarely
+// change, so an hour-old answer is fine.
+const AD_MEDIA_TTL_MS = 60 * 60_000;
+const adMediaCache = new Map<string, { at: number; ids: string[] }>();
+
+export function clearAdMediaCache(): void {
+  adMediaCache.clear();
+}
+
 export async function adMediaFor(postId: string): Promise<string[]> {
+  const cached = adMediaCache.get(postId);
+  if (cached && Date.now() - cached.at < AD_MEDIA_TTL_MS) return cached.ids;
+  const ids = await lookupAdMedia(postId);
+  if (ids) adMediaCache.set(postId, { at: Date.now(), ids });
+  return ids ?? [];
+}
+
+async function lookupAdMedia(postId: string): Promise<string[] | null> {
   try {
     const rows = await prisma.$queryRaw<{ mediaId: string | null }[]>`
       SELECT DISTINCT change->'value'->'media'->>'id' AS "mediaId"
@@ -316,7 +334,8 @@ export async function adMediaFor(postId: string): Promise<string[]> {
       .filter((id): id is string => Boolean(id) && id !== postId);
   } catch {
     // A failure here must not stop the sweep: the post itself is still checked.
-    return [];
+    // Not cached, so the next sweep tries again.
+    return null;
   }
 }
 

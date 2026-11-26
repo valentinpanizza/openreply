@@ -31,10 +31,17 @@ async function resetUsageIfNeededTx(
   });
 }
 
+// Prisma's default is to give up after 2 s waiting for a pooled connection.
+// The worker runs 5 jobs at once on a pool of 3 (DB_POOL_MAX) next to the
+// comment sweep, so under load 2 s was not enough: on 25/11 every first
+// message failed this way for 21 hours ("Unable to start a transaction in the
+// given time") while everything else kept working.
+const USAGE_TX_OPTIONS = { maxWait: 20_000, timeout: 20_000 };
+
 export async function resetUsageIfNeeded(workspaceId: string): Promise<void> {
   await prisma.$transaction(async (tx) => {
     await resetUsageIfNeededTx(tx, workspaceId);
-  });
+  }, USAGE_TX_OPTIONS);
 }
 
 export interface WorkspaceDMReservation {
@@ -115,7 +122,7 @@ export async function reserveWorkspaceDMSend(
       limit,
       periodStart: workspace.usagePeriodStart,
     };
-  });
+  }, USAGE_TX_OPTIONS);
 }
 
 export async function canSendDMForWorkspace(workspaceId: string): Promise<{

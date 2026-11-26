@@ -13,7 +13,7 @@ const { mockPrisma } = vi.hoisted(() => ({
 
 vi.mock("@/lib/db/client", () => ({ prisma: mockPrisma }));
 
-import { adMediaFor } from "../lib/polling/comment-reconciler";
+import { adMediaFor, clearAdMediaCache } from "../lib/polling/comment-reconciler";
 
 const POST = "18023946917554990";
 const AD = "17899788633163100";
@@ -21,6 +21,7 @@ const AD = "17899788633163100";
 describe("adMediaFor", () => {
   beforeEach(() => {
     mockPrisma.$queryRaw.mockReset();
+    clearAdMediaCache();
   });
 
   it("returns the ad media ids seen for the post", async () => {
@@ -46,5 +47,19 @@ describe("adMediaFor", () => {
   it("swallows a query failure, leaving the post itself still swept", async () => {
     mockPrisma.$queryRaw.mockRejectedValue(new Error("connection lost"));
     await expect(adMediaFor(POST)).resolves.toEqual([]);
+  });
+
+  it("reuses the answer for an hour instead of re-reading every webhook", async () => {
+    mockPrisma.$queryRaw.mockResolvedValue([{ mediaId: AD }]);
+    await adMediaFor(POST);
+    await expect(adMediaFor(POST)).resolves.toEqual([AD]);
+    expect(mockPrisma.$queryRaw).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not cache a failed lookup", async () => {
+    mockPrisma.$queryRaw.mockRejectedValueOnce(new Error("connection lost"));
+    mockPrisma.$queryRaw.mockResolvedValueOnce([{ mediaId: AD }]);
+    await expect(adMediaFor(POST)).resolves.toEqual([]);
+    await expect(adMediaFor(POST)).resolves.toEqual([AD]);
   });
 });

@@ -39,7 +39,14 @@ async function heartbeat() {
 void heartbeat();
 const heartbeatTimer = setInterval(() => void heartbeat(), HEARTBEAT_INTERVAL_MS);
 
+// A sweep can outlast the interval (one API call per post, plus the ad lookup).
+// Without this guard sweeps piled up on each other and kept the small DB pool
+// busy, starving the DM sends.
+let pollRunning = false;
+
 async function poll() {
+  if (pollRunning) return;
+  pollRunning = true;
   try {
     const attached = await attachPendingNextReels();
     if (attached.bound > 0 || attached.failedAccounts > 0) {
@@ -49,6 +56,8 @@ async function poll() {
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
     console.error("[DM Worker] Comment reconciliation failed:", message);
+  } finally {
+    pollRunning = false;
   }
 }
 
