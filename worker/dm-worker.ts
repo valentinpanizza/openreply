@@ -9,9 +9,12 @@ import { withProfile } from "@/lib/publishing/profile";
 import { syncSetterEchoesFlag } from "@/lib/setter/engine";
 import { pollSetterCommands } from "@/lib/setter/commands";
 import { maybeSendDayReport } from "@/lib/setter/report";
+import { createHubWorkers } from "@/lib/hub/worker";
 import os from "node:os";
 
 const worker = createDMWorker();
+// The Hub's inbox: forwarding DMs to it and sending what is written there.
+const hubWorkers = createHubWorkers();
 const startedAt = new Date().toISOString();
 const HEARTBEAT_INTERVAL_MS = 30_000;
 // Polling safety net for comments that webhooks miss. Runs in the worker because
@@ -195,7 +198,7 @@ async function shutdown(signal: string) {
   clearInterval(carouselTimer);
   clearInterval(reelTimer);
   clearInterval(setterCommandsTimer);
-  await worker.close();
+  await Promise.all([worker.close(), ...hubWorkers.map((w) => w.close())]);
   process.exit(0);
 }
 

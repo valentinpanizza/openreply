@@ -1370,6 +1370,28 @@ async function handleEcho(data: SetterEchoJob): Promise<void> {
   }
 }
 
+/**
+ * The owner wrote from the Hub (lib/hub/send.ts). The same as the echo of a
+ * message written by hand, but right after it goes out instead of after the
+ * echo's delay, so the setter never answers on top of him.
+ */
+export async function recordOwnerMessage(data: SetterEchoJob): Promise<void> {
+  await handleEcho(data);
+}
+
+/**
+ * Before a message from the Hub waits at the send gate: the reply the setter
+ * has pending for this person goes away (he is answering it himself).
+ */
+export async function cancelPendingReply(
+  data: { accountConnectionId?: string; instagramAccountId: string },
+  userId: string
+): Promise<void> {
+  if (!setterEnabled()) return;
+  const conversation = await findConversation(data, userId);
+  if (conversation && conversation.status !== "STOPPED") await getRedisConnection().del(tokenKey(conversation.id));
+}
+
 // ─── Reminder before the call ───────────────────────────────────────────────────
 
 export async function processSetterReminder(job: Job<SetterReminderJob>): Promise<void> {
