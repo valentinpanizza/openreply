@@ -12,6 +12,7 @@ import { Prisma, type InstagramProvider } from '@/app/generated/prisma/client';
 import { getRedisConnection } from '@/lib/queue/client';
 import { SETTER_ECHOES_FLAG } from '@/lib/setter/config';
 import { SETTER_FACEBOOK_FLAG, facebookPacingKey } from '@/lib/setter/facebook';
+import { queueHubForward } from '@/lib/hub/forward';
 
 const OPENING_DM_READ_FALLBACK_DELAY_MS = 5 * 60 * 1000;
 type InstagramPayload = Parameters<typeof parseCommentEvents>[0];
@@ -42,6 +43,8 @@ export async function processInstagramWebhook({ payload: incoming, provider, wor
   const allowed = new Set(accountMap.keys());
   const payload = { ...incoming, entry: incoming.entry.filter(e => allowed.has(e.id)) };
   if (!payload.entry.length) return;
+  // The Hub's inbox gets every DM of its account (lib/hub/forward.ts). Never throws.
+  if (provider === 'META') await queueHubForward(payload);
   const webhookEvent = await prisma.webhookEvent.create({
     data: {
       object:
